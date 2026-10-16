@@ -19,6 +19,7 @@ import {
   listFolders,
   listModels,
   ModelChoice,
+  orchestrateCreateSession,
   orchestrateSend,
   orchestrateTerminate,
   sessionExists,
@@ -108,10 +109,40 @@ function addLog(r: Review, step: Step, note: string): void {
 }
 
 function finish(r: Review, status: "done" | "failed" | "cancelled", error: string | null): void {
+  const wasRunning = r.status === "running";
   r.status = status;
   r.error = error;
   r.finished_at = now();
   if (status === "done") r.step = "done";
+  // A session that started this review via pr_review_start hears how it
+  // ended. Launch failures are excluded — the tool call already returned them.
+  if (wasRunning && status !== "cancelled" && r.notify && r.requested_by) {
+    try {
+      orchestrateSend(r.requested_by, finishedMessage(r));
+    } catch (_e) {
+      // requester gone — the result is still on the page and in pr_review_get
+    }
+  }
+}
+
+/// The message a requesting session receives when its review ends.
+export function finishedMessage(r: Review): string {
+  const head = `[PR review ${r.id}] \`${r.branch}\` in ${r.folder_name}`;
+  if (r.status !== "done" || !r.result) {
+    return `${head} FAILED: ${r.error ?? "unknown error"}. Re-run it with pr_review_rerun.`;
+  }
+  const c = r.counts;
+  const changes = r.result.findings
+    .filter((f) => f.kind === "change")
+    .slice(0, 10)
+    .map((f) => `- [${f.severity}] ${f.title}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
+  return (
+    `${head} finished — verdict: ${r.result.verdict}; ` +
+    `${c.blocker} blocker, ${c.major} major, ${c.minor} minor, ${c.nit} nit, ${c.praise} praise.\n\n` +
+    `${r.result.summary}\n` +
+    (changes.length ? `\n${changes.join("\n")}\n` : "") +
+    `\nFull result: pr_review_get({"id": "${r.id}"}).`
+  );
 }
 
 /// Route view of a review: the full document minus internal fields.
@@ -228,10 +259,14 @@ interface StartInput {
   folder: Folder;
   model: string;
   prompt: string;
+  /// Set when a session started the review via `pr_review_start`.
+  requestedBy?: string | null;
+  notify?: boolean;
 }
 
 function launch(input: StartInput): Review {
   const ts = now();
+  const fromTool = !!input.requestedBy;
   const review: Review = {
     id: newId(),
     branch: input.branch,
@@ -252,21 +287,34 @@ function launch(input: StartInput): Review {
     finished_at: null,
     error: null,
     result: null,
+    requested_by: input.requestedBy ?? null,
+    notify: !!input.notify,
     nudges: 0,
   };
-  addLog(review, "starting", "review queued");
+  addLog(review, "starting", fromTool ? "review queued by a session" : "review queued");
   saveReview(review);
 
+  const name = `PR review: ${input.branch}`;
+  const systemPrompt = buildSystemPrompt(review, globalPrompt());
   let sessionId: string;
   try {
-    sessionId = createSession({
-      name: `PR review: ${input.branch}`,
-      model: input.model,
-      is_temp: false,
-      system_prompt: buildSystemPrompt(review, globalPrompt()),
-      folder_path: input.folder.path,
-      folder_name: input.folder.name,
-    });
+    // A tool call's create_session is pinned to the caller's folder; the
+    // orchestrate twin takes the target folder explicitly.
+    sessionId = fromTool
+      ? orchestrateCreateSession({
+          folder_id: input.folder.id,
+          name,
+          model: input.model,
+          system_prompt: systemPrompt,
+        })
+      : createSession({
+          name,
+          model: input.model,
+          is_temp: false,
+          system_prompt: systemPrompt,
+          folder_path: input.folder.path,
+          folder_name: input.folder.name,
+        });
   } catch (e) {
     finish(review, "failed", `could not create the review session: ${errMsg(e)}`);
     saveReview(review);
@@ -276,7 +324,8 @@ function launch(input: StartInput): Review {
   storePut(SESSION_INDEX, sessionId, { review_id: review.id });
 
   try {
-    dispatchCapture(sessionId, kickoffMessage(review));
+    if (fromTool) orchestrateSend(sessionId, kickoffMessage(review));
+    else dispatchCapture(sessionId, kickoffMessage(review));
   } catch (e) {
     finish(review, "failed", `the review session was created but could not be started: ${errMsg(e)}`);
     saveReview(review);
@@ -504,4 +553,156 @@ export function onAgentEnded(payload: any): any {
   }
   saveReview(r);
   return { ok: true, nudged: r.status === "running" };
+}
+
+// ── Session-facing tools (start / inspect / control reviews) ────────────────
+// Any session may drive reviews the same way the page does. A PR review
+// session itself may not — it would recurse into reviews of reviews.
+
+function callerSession(context: any): string {
+  return str(context?.sessionId) || str(context?.session_id);
+}
+
+function assertNotReviewSession(context: any): string {
+  const caller = callerSession(context);
+  if (caller && storeGet(SESSION_INDEX, caller)) {
+    throw new Error("a PR review session cannot start or manage other reviews");
+  }
+  return caller;
+}
+
+/// Folder for a tool-started review: folder_id, else a folder name/path,
+/// else the calling session's own folder.
+function resolveFolder(args: any, context: any): Folder {
+  const folders = listFolders();
+  const id = str(args?.folder_id);
+  if (id) {
+    const f = folders.find((x) => x.id === id);
+    if (!f) throw new Error(`folder not found: ${id} (call pr_review_list_folders)`);
+    return f;
+  }
+  const named = str(args?.folder);
+  if (named) {
+    const hits = folders.filter((x) => x.name === named || x.path === named);
+    if (hits.length === 1) return hits[0];
+    throw new Error(
+      hits.length
+        ? `folder '${named}' is ambiguous — pass folder_id (call pr_review_list_folders)`
+        : `no folder named '${named}' (call pr_review_list_folders)`,
+    );
+  }
+  const own = str(context?.folderId) || str(context?.folder_id);
+  const f = own ? folders.find((x) => x.id === own) : undefined;
+  if (!f) throw new Error("pass folder_id — this session has no folder to default to");
+  return f;
+}
+
+function pageUrl(r: Review): string {
+  return `/plugin-page/pr-review/pr-review#/review/${r.id}`;
+}
+
+/** pr_review_start({branch, base?, folder_id?, folder?, model?, prompt?, notify?}) */
+export function toolStart(args: any, context: any): any {
+  const caller = assertNotReviewSession(context);
+  const branch = str(args?.branch);
+  if (!branch) throw new Error("branch is required");
+  validateRef("branch", branch);
+  const base = str(args?.base) || null;
+  if (base) validateRef("base", base);
+  const folder = resolveFolder(args, context);
+  const prompt = typeof args?.prompt === "string" ? args.prompt.trim() : "";
+  if (prompt.length > MAX_CUSTOM_PROMPT) {
+    throw new Error(`prompt is too long (max ${MAX_CUSTOM_PROMPT} characters)`);
+  }
+  const models = safeModels();
+  let model = str(args?.model);
+  if (model && !models.some((m) => m.id === model)) {
+    throw new Error(`unknown or non-thinking model '${model}' — omit it to use the default`);
+  }
+  if (!model) model = pickDefaultModel(models);
+  if (!model) throw new Error("no model is available — enable a provider first");
+  const notify = args?.notify !== false && !!caller;
+  const r = launch({ branch, base, folder, model, prompt, requestedBy: caller || null, notify });
+  if (r.status === "failed") throw new Error(r.error ?? "the review could not be started");
+  return {
+    review: summaryOf(r),
+    page: pageUrl(r),
+    message: notify
+      ? "Review started. You will get a message in this session when it finishes; " +
+        "use pr_review_get for progress meanwhile."
+      : "Review started. Poll pr_review_get for progress and the result.",
+  };
+}
+
+/** pr_review_list({status?, folder_id?, limit?}) */
+export function toolList(args: any, context: any): any {
+  assertNotReviewSession(context);
+  const status = str(args?.status);
+  const folderId = str(args?.folder_id);
+  const limit = Math.min(Math.max(Number(args?.limit) || 20, 1), 100);
+  const reviews = allReviews()
+    .filter((r) => (!status || r.status === status) && (!folderId || r.folder_id === folderId))
+    .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  return { total: reviews.length, reviews: reviews.slice(0, limit).map(summaryOf) };
+}
+
+/** pr_review_get({id}) — the full review incl. its result and activity log. */
+export function toolGet(args: any, context: any): any {
+  assertNotReviewSession(context);
+  const r = requireReview(args?.id);
+  return { review: publicReview(r), page: pageUrl(r) };
+}
+
+/** pr_review_rerun({id, notify?}) — a new review with the same inputs. */
+export function toolRerun(args: any, context: any): any {
+  const caller = assertNotReviewSession(context);
+  const prior = requireReview(args?.id);
+  const folder = listFolders().find((f) => f.id === prior.folder_id);
+  if (!folder) throw new Error("the review's folder no longer exists");
+  const notify = args?.notify !== false && !!caller;
+  const r = launch({
+    branch: prior.branch,
+    base: prior.base,
+    folder,
+    model: prior.model,
+    prompt: prior.custom_prompt,
+    requestedBy: caller || null,
+    notify,
+  });
+  if (r.status === "failed") throw new Error(r.error ?? "the review could not be started");
+  return { review: summaryOf(r), page: pageUrl(r) };
+}
+
+export function toolCancel(args: any, context: any): any {
+  assertNotReviewSession(context);
+  return cancelReview(args);
+}
+
+export function toolDelete(args: any, context: any): any {
+  assertNotReviewSession(context);
+  return deleteReview(args);
+}
+
+/** pr_review_list_folders — folders a review can target. */
+export function toolListFolders(_args: any, context: any): any {
+  assertNotReviewSession(context);
+  const own = str(context?.folderId) || str(context?.folder_id);
+  return {
+    folders: listFolders().map((f) => ({ id: f.id, name: f.name, path: f.path, current: f.id === own })),
+  };
+}
+
+/** pr_review_get_prompt — the global prompt (and whether it is the default). */
+export function toolGetPrompt(_args: any, context: any): any {
+  assertNotReviewSession(context);
+  const p = globalPrompt();
+  return { global_prompt: p, is_default: p === DEFAULT_GLOBAL_PROMPT };
+}
+
+/** pr_review_set_prompt({global_prompt}) — empty string restores the default. */
+export function toolSetPrompt(args: any, context: any): any {
+  assertNotReviewSession(context);
+  saveSettings({ global_prompt: typeof args?.global_prompt === "string" ? args.global_prompt : "" });
+  const p = globalPrompt();
+  return { ok: true, is_default: p === DEFAULT_GLOBAL_PROMPT, length: p.length };
 }

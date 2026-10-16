@@ -30,6 +30,11 @@ function install() {
       return { session: { id } };
     },
     peckboard_dispatch_capture: () => ({ ok: true }),
+    peckboard_orchestrate_create_session: () => {
+      const id = `s${++sessionSeq}`;
+      liveSessions.add(id);
+      return { session: { id } };
+    },
     peckboard_orchestrate_send: () => ({ ok: true }),
     peckboard_orchestrate_terminate: () => ({ ok: true }),
     peckboard_list_sessions_brief: () => ({
@@ -245,5 +250,64 @@ describe("cancel / delete / rerun / settings", () => {
 
     const reset = http("POST", "settings", { global_prompt: "" }).json.settings;
     expect(reset.global_prompt).toBe(reset.default_global_prompt);
+  });
+});
+
+describe("session tools", () => {
+  it("pr_review_start creates the review in the caller's folder and notifies it on submit", () => {
+    const res = tool("pr_review_start", { branch: "feat/x" }, "caller");
+    expect(res.error).toBeUndefined();
+    const r = res.review;
+    expect(r.status).toBe("running");
+    expect(r.folder_id).toBe("f1");
+    expect(r.model).toBe("claude:claude-opus-5-5");
+    expect(res.page).toContain(r.id);
+    // Explicit-folder create + orchestrate kickoff, not the caller-pinned pair.
+    const create = hostCalls.find((c) => c.name === "peckboard_orchestrate_create_session");
+    expect(create?.input).toMatchObject({ folder_id: "f1", name: "PR review: feat/x" });
+    expect(hostCalls.some((c) => c.name === "peckboard_create_session")).toBe(false);
+    const kick = hostCalls.find((c) => c.name === "peckboard_orchestrate_send");
+    expect(kick?.input.session_id).toBe(r.session_id);
+
+    expect(tool("pr_review_submit", { result: validResult() }, r.session_id).ok).toBe(true);
+    const note = hostCalls.filter(
+      (c) => c.name === "peckboard_orchestrate_send" && c.input.session_id === "caller",
+    );
+    expect(note).toHaveLength(1);
+    expect(note[0].input.text).toContain(`[PR review ${r.id}]`);
+    expect(note[0].input.text).toContain("verdict:");
+
+    const got = tool("pr_review_get", { id: r.id }, "caller");
+    expect(got.review.status).toBe("done");
+    expect(got.review.result.summary).toBeTruthy();
+    expect(tool("pr_review_list", { status: "done" }, "caller").reviews.map((x: any) => x.id)).toContain(r.id);
+  });
+
+  it("notify:false stays silent; failures are reported to a notifying caller", () => {
+    const quiet = tool("pr_review_start", { branch: "a", notify: false }, "caller").review;
+    tool("pr_review_submit", { result: validResult() }, quiet.session_id);
+    const loud = tool("pr_review_start", { branch: "b" }, "caller").review;
+    for (let i = 0; i <= MAX_NUDGES; i++) ended(loud.session_id);
+    const toCaller = hostCalls.filter(
+      (c) => c.name === "peckboard_orchestrate_send" && c.input.session_id === "caller",
+    );
+    expect(toCaller).toHaveLength(1);
+    expect(toCaller[0].input.text).toContain("FAILED");
+  });
+
+  it("rejects unknown folders/models and refuses calls from a review session", () => {
+    expect(tool("pr_review_start", { branch: "x", folder_id: "nope" }, "caller").error).toMatch(/folder not found/);
+    expect(tool("pr_review_start", { branch: "x", model: "mock:nope" }, "caller").error).toMatch(/unknown/);
+    const r = tool("pr_review_start", { branch: "x", folder: "repo" }, "caller").review;
+    expect(tool("pr_review_start", { branch: "y" }, r.session_id).error).toMatch(/cannot start/);
+    expect(tool("pr_review_cancel", { id: r.id }, "caller").ok).toBe(true);
+    expect(tool("pr_review_get", { id: r.id }, "caller").review.status).toBe("cancelled");
+  });
+
+  it("global prompt round-trips through get/set; empty restores the default", () => {
+    expect(tool("pr_review_get_prompt", {}, "caller").is_default).toBe(true);
+    expect(tool("pr_review_set_prompt", { global_prompt: "Be terse." }, "caller").is_default).toBe(false);
+    expect(tool("pr_review_get_prompt", {}, "caller").global_prompt).toBe("Be terse.");
+    expect(tool("pr_review_set_prompt", { global_prompt: "" }, "caller").is_default).toBe(true);
   });
 });

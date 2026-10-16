@@ -28,5 +28,6 @@ declare module "extism:host" {
     peckboard_list_sessions_brief(ptr: I64): I64;
     peckboard_orchestrate_send(ptr: I64): I64;
     peckboard_orchestrate_terminate(ptr: I64): I64;
+    peckboard_orchestrate_create_session(ptr: I64): I64;
   }
 }

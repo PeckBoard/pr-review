@@ -53,9 +53,12 @@ describe("manifest", () => {
     }
   });
 
-  it("names both tools within core's charset rule", () => {
+  it("declares exactly the tools lib.ts dispatches, within core's charset rule", async () => {
+    const { TOOLS } = await import("../src/lib");
     const names = manifest.mcp_tools.map((t: any) => t.name);
-    expect(names).toEqual(["pr_review_step", "pr_review_submit"]);
+    expect([...names].sort()).toEqual(Object.keys(TOOLS).sort());
+    expect(names).toEqual(expect.arrayContaining(["pr_review_start", "pr_review_get", "pr_review_list"]));
+    for (const n of names) expect(n).toMatch(/^[a-z0-9_]{1,64}$/);
     for (const n of names) expect(n).toMatch(/^[a-z0-9_]{1,64}$/);
     const submit = manifest.mcp_tools[1];
     expect(submit.input_schema.required).toEqual(["result"]);

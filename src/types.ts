@@ -86,6 +86,11 @@ export interface Review {
   updated_at: string;
   finished_at: string | null;
   error: string | null;
+  /// The session that started this review through `pr_review_start` (null
+  /// when started from the page). With `notify`, it gets a message when the
+  /// review finishes.
+  requested_by?: string | null;
+  notify?: boolean;
   result: Result | null;
   /// Watchdog: consecutive runs that ended without progress or a submit.
   /// Internal — stripped from route responses.

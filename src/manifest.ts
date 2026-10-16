@@ -181,6 +181,130 @@ export function manifestJson(): string {
           additionalProperties: false,
         },
       },
+      {
+        name: "pr_review_start",
+        description:
+          "Start a multi-model PR review of a git branch (Claude, Codex and Grok reviewers, merged " +
+          "and verified findings). Runs in its own new session, in parallel with other reviews; " +
+          "the user's checkout is never touched. Returns immediately with the review id. By " +
+          "default this session gets a message with the verdict and findings when it finishes; " +
+          "use pr_review_get for progress or the full result.",
+        input_schema: {
+          type: "object",
+          properties: {
+            branch: { type: "string", description: "Branch to review, e.g. feature/ABC-123-login." },
+            base: {
+              type: "string",
+              description: "Base branch to diff against. Omit to auto-detect (origin/HEAD, main, master).",
+            },
+            folder_id: {
+              type: "string",
+              description:
+                "Folder whose repo holds the branch (see pr_review_list_folders). Defaults to this " +
+                "session's folder.",
+            },
+            folder: { type: "string", description: "Folder name or path, instead of folder_id." },
+            model: {
+              type: "string",
+              description: "Model id for the review session (thinking models only). Omit for the default.",
+            },
+            prompt: {
+              type: "string",
+              description: "Extra instructions for this review only, appended to the global prompt.",
+            },
+            notify: {
+              type: "boolean",
+              description: "Message this session when the review finishes (default true).",
+            },
+          },
+          required: ["branch"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_list",
+        description:
+          "List PR reviews, newest first: id, branch, folder, status, current step, per-provider " +
+          "progress, finding counts and verdict.",
+        input_schema: {
+          type: "object",
+          properties: {
+            status: { type: "string", enum: ["queued", "running", "done", "failed", "cancelled"] },
+            folder_id: { type: "string" },
+            limit: { type: "integer", minimum: 1, maximum: 100, description: "Default 20." },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_get",
+        description:
+          "One PR review in full: status, step, activity log, and (when done) the result — " +
+          "summary, why, ticket, verdict, recommended changes with file:line and suggested fixes, " +
+          "praise, dropped findings.",
+        input_schema: {
+          type: "object",
+          properties: { id: { type: "string", description: "Review id." } },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_rerun",
+        description: "Start a new review with the same branch, folder, model and prompt as an earlier one.",
+        input_schema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Review id to repeat." },
+            notify: { type: "boolean", description: "Message this session when it finishes (default true)." },
+          },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_cancel",
+        description: "Cancel a queued or running PR review and stop its session.",
+        input_schema: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_delete",
+        description:
+          "Delete a PR review from the list (stops it if running). Its session transcript is kept.",
+        input_schema: {
+          type: "object",
+          properties: { id: { type: "string" } },
+          required: ["id"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_list_folders",
+        description: "Folders a PR review can target (id, name, path; `current` marks this session's).",
+        input_schema: { type: "object", properties: {}, additionalProperties: false },
+      },
+      {
+        name: "pr_review_get_prompt",
+        description: "Read the global PR review prompt every review uses.",
+        input_schema: { type: "object", properties: {}, additionalProperties: false },
+      },
+      {
+        name: "pr_review_set_prompt",
+        description:
+          "Replace the global PR review prompt for all future reviews. An empty string restores " +
+          "the default. Read it first with pr_review_get_prompt and edit, don't rewrite blindly.",
+        input_schema: {
+          type: "object",
+          properties: { global_prompt: { type: "string" } },
+          required: ["global_prompt"],
+          additionalProperties: false,
+        },
+      },
     ],
   };
   return JSON.stringify(manifest);

@@ -3,14 +3,38 @@
 
 import { skip, allow, cancel, errMsg } from "./verdict";
 import { serveHttp, serveAuthed } from "./http";
-import { onAgentEnded, toolStep, toolSubmit } from "./review";
+import {
+  onAgentEnded,
+  toolCancel,
+  toolDelete,
+  toolGet,
+  toolGetPrompt,
+  toolList,
+  toolListFolders,
+  toolRerun,
+  toolSetPrompt,
+  toolStart,
+  toolStep,
+  toolSubmit,
+} from "./review";
 
 /// The agent-facing tools, keyed by the name declared in the manifest. Each
 /// takes the caller `context` as its second argument — core builds it from the
 /// verified ToolCallContext, so the review-session guard cannot be forged.
-const TOOLS: Record<string, (args: any, context: any) => any> = {
+export const TOOLS: Record<string, (args: any, context: any) => any> = {
+  // Review sessions report back.
   pr_review_step: toolStep,
   pr_review_submit: toolSubmit,
+  // Any other session starts and manages reviews.
+  pr_review_start: toolStart,
+  pr_review_list: toolList,
+  pr_review_get: toolGet,
+  pr_review_rerun: toolRerun,
+  pr_review_cancel: toolCancel,
+  pr_review_delete: toolDelete,
+  pr_review_list_folders: toolListFolders,
+  pr_review_get_prompt: toolGetPrompt,
+  pr_review_set_prompt: toolSetPrompt,
 };
 
 export function dispatch(hook: string, payload: any): string {

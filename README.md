@@ -61,6 +61,30 @@ All JSON, under `/api/plugin-ui/pr-review/`. Errors return `400 {error}`.
 
 ## Agent Tools
 
+### Starting and Managing Reviews (Any Session)
+
+Everything the page does is also an MCP tool, so a session can run reviews:
+
+- `pr_review_start({branch, base?, folder_id? | folder?, model?, prompt?, notify?})`
+  starts a review and returns at once with its id and page link. The folder
+  defaults to the calling session's own; `folder` takes a name or path. The
+  review session is created in that folder (`orchestrate_create_session`, since
+  a tool call's `create_session` is pinned to the caller's folder). With
+  `notify` (default true) the calling session gets a message when the review
+  finishes: verdict, counts, summary and the top recommended changes, or the
+  failure reason.
+- `pr_review_list({status?, folder_id?, limit?})`, `pr_review_get({id})` —
+  progress, and the full result once done.
+- `pr_review_rerun({id, notify?})`, `pr_review_cancel({id})`,
+  `pr_review_delete({id})`.
+- `pr_review_list_folders()` — target folders, `current` marking the caller's.
+- `pr_review_get_prompt()` / `pr_review_set_prompt({global_prompt})` — the
+  global prompt; an empty string restores the default.
+
+A review session itself is refused all of these, so reviews never recurse.
+
+### Reporting Back (Review Sessions Only)
+
 - `pr_review_step({step, note?, provider?, provider_status?, abort_reason?})`
   updates the step, the progress log and per-provider status. `abort_reason`
   marks the review failed, for reviews that cannot run at all (for example, the
@@ -72,7 +96,6 @@ All JSON, under `/api/plugin-ui/pr-review/`. Errors return `400 {error}`.
 
 Both tools resolve the review from the **calling session's id** (the
 `session_index` collection), so only a review's own session can drive it.
-
 ## Watchdog
 
 `session.agent.ended` fires when a review session's run ends. If no result

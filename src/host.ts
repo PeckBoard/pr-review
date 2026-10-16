@@ -119,3 +119,20 @@ export function orchestrateSend(sessionId: string, text: string): void {
 export function orchestrateTerminate(sessionId: string): void {
   hostCall("peckboard_orchestrate_terminate", { session_id: sessionId });
 }
+
+/// Create a session in an explicit folder. Used by `pr_review_start`: a tool
+/// call's create_session is pinned to the caller's folder, but a review may
+/// target any folder. Returns the new session's id.
+export function orchestrateCreateSession(input: {
+  folder_id: string;
+  name: string;
+  model: string;
+  system_prompt: string;
+}): string {
+  const result = hostCall("peckboard_orchestrate_create_session", input);
+  const id = result?.session?.id;
+  if (typeof id !== "string" || !id) {
+    throw new Error("session creation returned no session id");
+  }
+  return id;
+}
