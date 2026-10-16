@@ -141,3 +141,22 @@ The reviewer prompt draws on:
 - [Qodo pr-agent](https://github.com/qodo-ai/pr-agent) reviewer prompts
 - [Google engineering practices: code review](https://google.github.io/eng-practices/review/)
 - [Conventional Comments](https://conventionalcomments.org/)
+
+## Triage and Publish
+
+After a review is `done` the user triages and posts it; the decision is
+always theirs, never derived from the findings or the model's `verdict`.
+
+- `POST triage {id, index, ignored?, comment?}` / `pr_review_triage` — store
+  `triage[index] = {ignored, comment}`; `comment: null` restores the wording.
+- `GET publish-preview?id=` — `{body, comments, body_items, ignored}`: the
+  default body (summary / why / ticket) and every comment that will be posted,
+  each prefixed with a Conventional Comments label from its severity.
+- `POST publish {id, decision, body}` / `pr_review_publish` — `decision` is
+  required (`approve | request_changes | comment`). Creates a publish session
+  in the review's folder (`session_index` entry with `kind: "publish"`) whose
+  kickoff carries the exact GitHub review payload. It posts one review via
+  `gh api …/pulls/<n>/reviews`, moves out-of-diff comments into the body, never
+  changes the event, and reports with `pr_review_publish_result`. The
+  watchdog nudges a silent publish run once, then marks it failed; a failed or
+  posted publish can be started again.

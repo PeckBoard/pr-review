@@ -6,12 +6,17 @@ import {
   filterFolders,
   formatLocation,
   groupFindings,
+  previewCaption,
   progressCaption,
+  publishBlockReason,
+  publishChip,
   relTime,
   safeUrl,
+  splitTriage,
   startBlockReason,
   stepStates,
   toMs,
+  triageEntry,
   validateStart,
   // @ts-expect-error plain JS page module
 } from "../page/util.js";
@@ -108,5 +113,37 @@ describe("review helpers", () => {
     expect(formatLocation({ file: null })).toBeNull();
     expect(safeUrl("https://github.com/o/r/issues/1")).toBe("https://github.com/o/r/issues/1");
     expect(safeUrl("javascript:alert(1)")).toBeNull();
+  });
+
+  describe("triage + publish helpers", () => {
+    it("splits findings by triage, keeping indices, with the optimistic overlay winning", () => {
+      const findings = [{ title: "a" }, { title: "b" }, { title: "c" }];
+      const saved = { "0": { ignored: true, comment: null }, "2": { ignored: false, comment: "mine" } };
+      const { kept, ignored } = splitTriage(findings, saved, { "0": { ignored: false, comment: null } });
+      expect(kept.map((f: { _index: number }) => f._index)).toEqual([0, 1, 2]);
+      expect(ignored).toHaveLength(0);
+      expect(kept[2]._comment).toBe("mine");
+      expect(splitTriage(findings, saved, {}).ignored.map((f: { title: string }) => f.title)).toEqual(["a"]);
+      expect(triageEntry(null, null, 1)).toEqual({ ignored: false, comment: null });
+    });
+
+    it("never enables publish without a user-chosen decision", () => {
+      expect(publishBlockReason({ decision: null, body: "x", running: false })).toBe("Choose a decision");
+      expect(publishBlockReason({ decision: "approve", body: "", running: false })).toBeNull();
+      expect(publishBlockReason({ decision: "request_changes", body: " ", running: false })).toMatch(/body/);
+      expect(publishBlockReason({ decision: "comment", body: "x", running: true })).toMatch(/already running/);
+    });
+
+    it("captions the preview and labels the list chip", () => {
+      expect(previewCaption({ comments: [{}], body_items: [{}, {}], ignored: 3 })).toBe(
+        "1 inline comment, 2 in the body, 3 ignored",
+      );
+      expect(publishChip({ status: "posted", decision: "request_changes" })).toEqual({
+        label: "Changes requested",
+        status: "posted",
+      });
+      expect(publishChip({ status: "running", decision: "approve" })?.label).toBe("Posting…");
+      expect(publishChip(null)).toBeNull();
+    });
   });
 });

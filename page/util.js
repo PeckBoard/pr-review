@@ -235,3 +235,81 @@ export function confidenceLevel(c) {
   if (v >= 0.5) return "medium";
   return "low";
 }
+
+// ── triage + publish ─────────────────────────────────────────────────────────
+
+/** The user's publish choices. Never pre-selected or derived from findings. */
+export const DECISIONS = [
+  { id: "approve", label: "Approve", hint: "Ready to merge as it is." },
+  { id: "request_changes", label: "Request changes", hint: "Must be addressed before merging." },
+  { id: "comment", label: "Comment", hint: "Feedback without approving or blocking." },
+];
+
+export const DECISION_LABELS = { approve: "Approve", request_changes: "Request changes", comment: "Comment" };
+
+/** Past tense, for a posted review. */
+export const DECISION_DONE = { approve: "Approved", request_changes: "Changes requested", comment: "Commented" };
+
+/** A publish session is posting right now — keeps the poll fast. */
+export function publishRunning(review) {
+  return !!(review && review.publish && review.publish.status === "running");
+}
+
+/** Needs the fast poll: the review itself or its publish is still working. */
+export function pollsFast(review) {
+  return isActive(review) || publishRunning(review);
+}
+
+/** Triage entry for a finding index, with `overlay` (optimistic, unsaved)
+ * winning over the saved map. Missing = not ignored, no override. */
+export function triageEntry(triage, overlay, index) {
+  const k = String(index);
+  const e = (overlay && overlay[k]) || (triage && triage[k]) || null;
+  return { ignored: !!(e && e.ignored), comment: e && e.comment ? e.comment : null };
+}
+
+/** Findings tagged with their position in result.findings (`_index`), split
+ * into kept and ignored. */
+export function splitTriage(findings, triage, overlay) {
+  const kept = [];
+  const ignored = [];
+  (findings || []).forEach((f, i) => {
+    const t = triageEntry(triage, overlay, i);
+    (t.ignored ? ignored : kept).push(Object.assign({}, f, { _index: i, _comment: t.comment }));
+  });
+  return { kept, ignored };
+}
+
+/** The finding's own text — what an override replaces. */
+export function defaultComment(f) {
+  return [f.detail, f.suggestion].filter((s) => s && String(s).trim()).join("\n\n");
+}
+
+const plural = (n, one, many) => n + " " + (n === 1 ? one : many);
+
+/** "2 inline comments, 1 in the body, 3 ignored". */
+export function previewCaption(p) {
+  const c = (p && p.comments ? p.comments.length : 0) || 0;
+  const b = (p && p.body_items ? p.body_items.length : 0) || 0;
+  const k = (p && p.ignored) || 0;
+  return plural(c, "inline comment", "inline comments") + ", " + b + " in the body, " + k + " ignored";
+}
+
+/** Why "Start publish session" is disabled, as one sentence (null = enabled). */
+export function publishBlockReason({ decision, body, running }) {
+  if (running) return "A publish is already running.";
+  if (!decision) return "Choose a decision";
+  // GitHub rejects REQUEST_CHANGES / COMMENT reviews with an empty body.
+  if (decision !== "approve" && !String(body || "").trim())
+    return "Add a review body to " + (decision === "comment" ? "comment." : "request changes.");
+  return null;
+}
+
+/** List-row chip for a review's publish: {label, status} or null. */
+export function publishChip(publish) {
+  if (!publish) return null;
+  if (publish.status === "running") return { label: "Posting…", status: "running" };
+  if (publish.status === "failed") return { label: "Post failed", status: "failed" };
+  if (publish.status === "posted") return { label: DECISION_DONE[publish.decision] || "Posted", status: "posted" };
+  return null;
+}

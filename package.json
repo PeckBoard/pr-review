@@ -1,6 +1,6 @@
 {
   "name": "peckboard-pr-review",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "PeckBoard plugin: review a git branch like a pull request. A dedicated agent session gathers the branch's context once, fans the review out to independent claude / codex / grok reviewer subagents, merges and re-verifies their findings in code, and submits one structured result the PR Reviews page renders.",
   "scripts": {

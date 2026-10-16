@@ -86,24 +86,24 @@ function isActive(r: Review): boolean {
   return r.status === "queued" || r.status === "running";
 }
 
-function loadReview(id: string): Review | null {
+export function loadReview(id: string): Review | null {
   if (!id) return null;
   const r = storeGet(REVIEWS, id);
   return r && typeof r === "object" ? (r as Review) : null;
 }
 
-function saveReview(r: Review): void {
+export function saveReview(r: Review): void {
   r.updated_at = now();
   storePut(REVIEWS, r.id, r);
 }
 
-function requireReview(id: unknown): Review {
+export function requireReview(id: unknown): Review {
   const r = loadReview(str(id));
   if (!r) throw new Error("review not found");
   return r;
 }
 
-function addLog(r: Review, step: Step, note: string): void {
+export function addLog(r: Review, step: Step, note: string): void {
   r.log.push({ at: now(), step, note: note.slice(0, MAX_NOTE) });
   if (r.log.length > MAX_LOG) r.log.splice(0, r.log.length - MAX_LOG);
 }
@@ -137,24 +137,32 @@ export function finishedMessage(r: Review): string {
     .slice(0, 10)
     .map((f) => `- [${f.severity}] ${f.title}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
   return (
-    `${head} finished — verdict: ${r.result.verdict}; ` +
+    `${head} finished — model's suggested verdict: ${r.result.verdict}; ` +
     `${c.blocker} blocker, ${c.major} major, ${c.minor} minor, ${c.nit} nit, ${c.praise} praise.\n\n` +
     `${r.result.summary}\n` +
     (changes.length ? `\n${changes.join("\n")}\n` : "") +
-    `\nFull result: pr_review_get({"id": "${r.id}"}).`
+    `\nFull result: pr_review_get({"id": "${r.id}"}). To post it to the PR, the user decides ` +
+    "approve / request changes / comment — triage with pr_review_triage, then pr_review_publish."
   );
 }
 
-/// Route view of a review: the full document minus internal fields.
-export function publicReview(r: Review): Omit<Review, "nudges"> {
-  const { nudges: _n, ...rest } = r;
-  return rest;
+function publicPublish(p: Review["publish"], withBody: boolean): any {
+  if (!p) return null;
+  const { nudges: _n, requested_by: _q, body, ...rest } = p;
+  return withBody ? { ...rest, body } : rest;
 }
 
-/// List view: no log, no result — but the verdict, so rows can show it.
+/// Route view of a review: the full document minus internal fields.
+export function publicReview(r: Review): any {
+  const { nudges: _n, ...rest } = r;
+  return { ...rest, triage: r.triage ?? {}, publish: publicPublish(r.publish, true) };
+}
+
+/// List view: no log, no result — but the model's suggested verdict and the
+/// publish state, so rows can show them.
 export function summaryOf(r: Review): any {
-  const { log: _l, result: _r, nudges: _n, ...rest } = r;
-  return { ...rest, verdict: r.result?.verdict ?? null };
+  const { log: _l, result: _r, nudges: _n, triage: _t, ...rest } = r;
+  return { ...rest, verdict: r.result?.verdict ?? null, publish: publicPublish(r.publish, false) };
 }
 
 // ── Models / settings ───────────────────────────────────────────────────────
@@ -563,7 +571,7 @@ function callerSession(context: any): string {
   return str(context?.sessionId) || str(context?.session_id);
 }
 
-function assertNotReviewSession(context: any): string {
+export function assertNotReviewSession(context: any): string {
   const caller = callerSession(context);
   if (caller && storeGet(SESSION_INDEX, caller)) {
     throw new Error("a PR review session cannot start or manage other reviews");

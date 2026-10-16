@@ -16,6 +16,7 @@ import {
   saveSettings,
   startReview,
 } from "./review";
+import { previewFor, startPublish, triageFinding } from "./publish";
 
 export const PAGE_PATH = "/plugin-api/v1/pr-review";
 export const API = "/api/plugin-ui/pr-review";
@@ -69,6 +70,9 @@ const ROUTES: Record<string, Handler> = {
   [`POST ${API}/cancel`]: (b) => cancelReview(b),
   [`POST ${API}/delete`]: (b) => deleteReview(b),
   [`POST ${API}/settings`]: (b) => saveSettings(b),
+  [`POST ${API}/triage`]: (b) => triageFinding(b),
+  [`GET ${API}/publish-preview`]: (_b, q) => previewFor(queryParam(q, "id")),
+  [`POST ${API}/publish`]: (b) => startPublish(b),
 };
 
 /// The ui_routes declared in the manifest — derived from ROUTES so the two

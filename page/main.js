@@ -10,6 +10,9 @@
 import { CSS } from "./style.js";
 import { inlineMarkdown, markdownToHtml } from "./md.js";
 import {
+  DECISIONS,
+  DECISION_DONE,
+  DECISION_LABELS,
   SEVERITIES,
   SEVERITY_LABELS,
   STATUS_LABELS,
@@ -17,6 +20,7 @@ import {
   STEP_LABELS,
   VERDICT_LABELS,
   confidenceLevel,
+  defaultComment,
   duration,
   elapsedMs,
   fieldForError,
@@ -26,13 +30,20 @@ import {
   groupModels,
   isActive,
   modelName,
+  pollsFast,
+  previewCaption,
   progressCaption,
   providerLabel,
+  publishBlockReason,
+  publishChip,
+  publishRunning,
   relTime,
   safeUrl,
+  splitTriage,
   startBlockReason,
   stepStates,
   toMs,
+  triageEntry,
   validateStart,
 } from "./util.js";
 
@@ -115,7 +126,8 @@ function h(tag, props, ...kids) {
       if (v === null || v === undefined || v === false) continue;
       if (k === "class") n.className = v;
       else if (k === "text") n.textContent = v;
-      else if (k === "html") n.innerHTML = v; // escape-first markdown output only
+      else if (k === "html")
+        n.innerHTML = v; // escape-first markdown output only
       else if (k === "testid") n.setAttribute("data-testid", v);
       else if (k === "value") n.value = v;
       else if (k.startsWith("on") && typeof v === "function") n.addEventListener(k.slice(2), v);
@@ -167,9 +179,16 @@ const ICONS = {
     '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
   file: '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="m10 13-2 2 2 2"/><path d="m14 17 2-2-2-2"/>',
   bulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
-  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  external:
+    '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   pr: '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" x2="6" y1="9" y2="21"/>',
   comment: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  pencil:
+    '<path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/>',
+  eye: '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff:
+    '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
+  send: '<path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/>',
 };
 function icon(name, extra) {
   const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -199,9 +218,12 @@ const S = {
   menu: null, // open row menu {id, menu, btn}
   filters: new Set(SEVERITIES),
   consensusOnly: false,
-  open: { log: false, prompt: false, dropped: false },
+  open: { log: false, prompt: false, dropped: false, ignored: false, pubPreview: false },
   promptDraft: null, // global prompt editor text (null = reload from settings)
   promptBase: null, // last saved prompt — dirty = draft !== base
+  pub: newPub(), // publish form for the open review: decision, body draft, preview
+  triageOverlay: {}, // optimistic triage {index: {ignored, comment}} until the save lands
+  editing: {}, // open comment editors {index: draft text}
 };
 let listSig = "";
 let detailSig = "";
@@ -284,9 +306,12 @@ function onRouteChange() {
     S.detail = (S.data && S.data.reviews.find((x) => x.id === r.id)) || null;
     S.detailFor = r.id;
     S.detailError = null;
-    S.open = { log: false, prompt: false, dropped: false };
+    S.open = { log: false, prompt: false, dropped: false, ignored: false, pubPreview: false };
     S.filters = new Set(SEVERITIES);
     S.consensusOnly = false;
+    S.pub = newPub();
+    S.triageOverlay = {};
+    S.editing = {};
   }
   if (r.view === "prompt") {
     S.promptDraft = null;
@@ -345,7 +370,8 @@ async function refresh() {
 
 function schedulePoll() {
   clearTimeout(pollTimer);
-  const active = (S.data && S.data.reviews.some(isActive)) || (S.detail && isActive(S.detail));
+  // A posting publish counts as active too: its status lands via the poll.
+  const active = (S.data && S.data.reviews.some(pollsFast)) || (S.detail && pollsFast(S.detail));
   pollTimer = setTimeout(refresh, active ? POLL_ACTIVE_MS : POLL_IDLE_MS);
 }
 
@@ -364,7 +390,6 @@ function applyState(st) {
       if (S.menu) pendingListRefresh = true;
       else fillList();
     }
-  } else if (S.route.view === "prompt" && first) {
   } else if (S.route.view === "prompt" && first) {
     render();
   }
@@ -387,6 +412,7 @@ function applyDetail(det) {
   if (!review) return;
   S.detail = review;
   S.detailError = null;
+  maybeLoadPreview(review);
   const sig = JSON.stringify(review);
   if (sig !== detailSig) {
     detailSig = sig;
@@ -472,13 +498,40 @@ function statusPill(status) {
   );
 }
 
+// The model's verdict is only a suggestion — muted, labelled as such, so it
+// never reads as the decision (the user makes that when publishing).
 function verdictBadge(v, large) {
   const ic = v === "approve" ? "check" : v === "request_changes" ? "alert" : "comment";
   return h(
     "span",
-    { class: "verdict verdict-" + v + (large ? " verdict-lg" : ""), testid: "pr-review-verdict", "data-verdict": v },
+    {
+      class: "verdict verdict-suggest verdict-" + v + (large ? " verdict-lg" : ""),
+      testid: "pr-review-verdict",
+      "data-verdict": v,
+      title: "The review model's suggestion — you choose the decision when publishing",
+    },
     icon(ic),
+    h("span", { class: "verdict-prefix" }, "Model suggests:"),
     VERDICT_LABELS[v] || v,
+  );
+}
+
+// The user's published decision on a list row.
+function publishChipEl(publish) {
+  const c = publishChip(publish);
+  if (!c) return null;
+  const ic = c.status === "running" ? "loader" : c.status === "failed" ? "alert" : "check";
+  return h(
+    "span",
+    {
+      class: "pub-chip pub-" + c.status + (c.status === "posted" ? " pub-" + publish.decision : ""),
+      testid: "pr-review-publish-chip",
+      "data-status": c.status,
+      "data-decision": publish.decision || null,
+      title: c.status === "posted" ? "Your review was posted to GitHub" : null,
+    },
+    icon(ic),
+    c.label,
   );
 }
 
@@ -1029,6 +1082,7 @@ function reviewRow(r) {
     h(
       "div",
       { class: "rv-cell rv-outcome" },
+      publishChipEl(r.publish),
       verdict ? verdictBadge(verdict) : null,
       counts,
       r.status === "done" && !counts.length && !verdict ? h("span", { class: "muted" }, "No findings") : null,
@@ -1069,7 +1123,12 @@ function openNewReview() {
   const fields = {};
 
   function field(name, label, control, opts) {
-    const errEl = h("div", { class: "field-error", testid: "pr-review-field-error", "data-field": name, role: "alert" });
+    const errEl = h("div", {
+      class: "field-error",
+      testid: "pr-review-field-error",
+      "data-field": name,
+      role: "alert",
+    });
     errEl.hidden = true;
     const wrap = h(
       "div",
@@ -1078,7 +1137,9 @@ function openNewReview() {
         "label",
         { class: "field-label", for: opts.id },
         label,
-        opts.required ? h("span", { class: "req", "aria-hidden": "true" }, "*") : h("span", { class: "opt" }, "optional"),
+        opts.required
+          ? h("span", { class: "req", "aria-hidden": "true" }, "*")
+          : h("span", { class: "opt" }, "optional"),
       ),
       control,
       opts.hint ? h("div", { class: "field-hint" }, opts.hint) : null,
@@ -1173,7 +1234,11 @@ function openNewReview() {
         "optgroup",
         { label: providerLabel(p) },
         list.map((m) =>
-          h("option", { value: m.id }, (m.display_name || m.id) + (m.id === settings.default_model ? " (default)" : "")),
+          h(
+            "option",
+            { value: m.id },
+            (m.display_name || m.id) + (m.id === settings.default_model ? " (default)" : ""),
+          ),
         ),
       ),
     );
@@ -1349,7 +1414,12 @@ function folderCombobox(folders, selectedId, onChange, onBlur) {
     disabled: !folders.length,
     testid: "pr-review-folder",
   });
-  const list = h("ul", { class: "combo-list", id: "prr-folder-list", role: "listbox", testid: "pr-review-folder-list" });
+  const list = h("ul", {
+    class: "combo-list",
+    id: "prr-folder-list",
+    role: "listbox",
+    testid: "pr-review-folder-list",
+  });
   list.hidden = true;
   const toggle = h(
     "button",
@@ -1640,12 +1710,33 @@ function renderDetailView() {
   return h("div", { class: "view view-detail", testid: "pr-review-detail" }, backLink(), detailBody);
 }
 
-function redrawDetail() {
+// `focusKey` names a `data-fk` control to focus afterwards; otherwise the
+// focused control (a textarea mid-edit, a radio) is found again in the
+// fresh tree by its `data-fk`, so a poll never steals the caret.
+function redrawDetail(focusKey) {
   if (!detailBody || !detailBody.isConnected) return;
+  const a = document.activeElement;
+  const key = focusKey || (a && detailBody.contains(a) && a.dataset ? a.dataset.fk : null);
+  const sel =
+    !focusKey && key && typeof a.selectionStart === "number" ? [a.selectionStart, a.selectionEnd, a.scrollTop] : null;
   // Swap in one go so the page height (and the scroll position) holds.
   const fresh = buildDetail();
   detailBody.replaceWith(fresh);
   detailBody = fresh;
+  if (!key) return;
+  const n = fresh.querySelector('[data-fk="' + key + '"]');
+  if (!n || n.disabled) return;
+  n.focus({ preventScroll: true });
+  try {
+    if (sel) {
+      n.setSelectionRange(sel[0], sel[1]);
+      n.scrollTop = sel[2];
+    } else if (focusKey && typeof n.value === "string" && n.setSelectionRange) {
+      n.setSelectionRange(n.value.length, n.value.length);
+    }
+  } catch (_e) {
+    // radios have no selection
+  }
 }
 
 function buildDetail() {
@@ -1916,13 +2007,21 @@ function ticketView(t) {
   // Popups opened from this sandboxed frame inherit the sandbox; external
   // trackers (GitHub, Jira, Linear) still render fine there.
   const link = (cls, kids) =>
-    url ? h("a", { class: cls, href: url, target: "_blank", rel: "noopener noreferrer" }, kids) : h("span", { class: cls }, kids);
+    url
+      ? h("a", { class: cls, href: url, target: "_blank", rel: "noopener noreferrer" }, kids)
+      : h("span", { class: cls }, kids);
   return h(
     "div",
     { class: "ticket" },
     t.id ? link("ticket-id", [t.id]) : null,
     t.title ? (t.id ? h("span", { class: "ticket-title" }, t.title) : link("ticket-title", [t.title])) : null,
-    url ? h("a", { class: "link-btn", href: url, target: "_blank", rel: "noopener noreferrer", "aria-label": "Open ticket" }, icon("external")) : null,
+    url
+      ? h(
+          "a",
+          { class: "link-btn", href: url, target: "_blank", rel: "noopener noreferrer", "aria-label": "Open ticket" },
+          icon("external"),
+        )
+      : null,
   );
 }
 
@@ -1938,16 +2037,67 @@ function confMeter(c) {
   );
 }
 
-function findingCard(f, sev) {
+// `ctx` = {r, triage, ignored}: with `triage` set the card carries the
+// Ignore / Restore and Edit comment controls; `f._index` / `f._comment` come
+// from splitTriage.
+function findingCard(f, sev, ctx) {
   const reviewers = f.reviewers || [];
   const loc = formatLocation(f);
   const praise = sev === "praise";
+  const triage = !!(ctx && ctx.triage);
+  const ignored = triage && ctx.ignored;
+  const idx = f._index;
+  const editing = triage && !ignored && S.editing[idx] !== undefined;
+  const edited = triage && !!f._comment;
+  const locked = triage && triageLocked(ctx.r);
+  const actions = triage
+    ? h(
+        "div",
+        { class: "factions" },
+        !ignored && !editing
+          ? h(
+              "button",
+              {
+                class: "btn btn-sm btn-quiet",
+                type: "button",
+                testid: "pr-review-finding-edit",
+                "data-index": idx,
+                disabled: locked,
+                title: "Change the comment posted for this finding",
+                onclick: () => startEdit(f),
+              },
+              icon("pencil"),
+              "Edit comment",
+            )
+          : null,
+        h(
+          "button",
+          {
+            class: "btn btn-sm btn-quiet",
+            type: "button",
+            testid: "pr-review-finding-ignore",
+            "data-index": idx,
+            "data-ignored": String(!!ignored),
+            "data-fk": "ignore-" + idx,
+            disabled: locked,
+            title: ignored
+              ? "Include this finding in the published review again"
+              : "Leave this finding out of the published review",
+            onclick: () => saveTriage(ctx.r, idx, { ignored: !ignored }),
+          },
+          icon(ignored ? "eye" : "eyeOff"),
+          ignored ? "Restore" : "Ignore",
+        ),
+      )
+    : null;
   return h(
     "article",
     {
-      class: "finding sev-l-" + sev,
+      class: "finding sev-l-" + sev + (ignored ? " is-ignored" : "") + (edited || editing ? " is-edited" : ""),
       testid: praise ? "pr-review-praise-item" : "pr-review-finding",
       "data-severity": sev,
+      "data-index": idx,
+      "data-ignored": triage ? String(!!ignored) : null,
     },
     h(
       "div",
@@ -1956,9 +2106,30 @@ function findingCard(f, sev) {
         ? h("span", { class: "sev sev-praise" }, icon("star"), "Praise")
         : h("span", { class: "sev sev-" + sev }, SEVERITY_LABELS[sev]),
       h("div", { class: "ftitle", html: inlineMarkdown(f.title || "Untitled finding") }),
+      edited
+        ? h(
+            "span",
+            {
+              class: "edited-tag",
+              testid: "pr-review-finding-edited",
+              title: "Your comment replaces the finding's text when published",
+            },
+            icon("pencil"),
+            "edited",
+          )
+        : null,
       typeof f.confidence === "number" ? confMeter(f.confidence) : null,
     ),
     loc ? h("div", null, h("span", { class: "floc", title: loc }, icon("file"), loc)) : null,
+    editing ? commentEditor(ctx.r, f, locked) : null,
+    edited && !editing
+      ? h(
+          "div",
+          { class: "fcomment", testid: "pr-review-finding-comment" },
+          h("div", { class: "fsugg-label" }, icon("comment"), "Your comment"),
+          h("div", { class: "md", html: markdownToHtml(f._comment) }),
+        )
+      : null,
     f.detail ? h("div", { class: "md fdetail", html: markdownToHtml(f.detail) }) : null,
     f.suggestion
       ? h(
@@ -1972,7 +2143,7 @@ function findingCard(f, sev) {
             : h("div", { class: "md", html: markdownToHtml(f.suggestion) }),
         )
       : null,
-    reviewers.length
+    reviewers.length || actions
       ? h(
           "div",
           { class: "ffoot" },
@@ -1989,14 +2160,604 @@ function findingCard(f, sev) {
               )
             : null,
           reviewers.map((rv) => h("span", { class: "rchip" }, reviewerLabel(rv))),
+          actions,
         )
       : null,
   );
 }
 
+// The Conventional Comments label the backend puts in front of this
+// finding's comment ("issue (blocking)", "nitpick", …), from the preview.
+function previewLabel(index) {
+  const p = S.pub.preview;
+  if (!p) return null;
+  const hit = (p.comments || []).concat(p.body_items || []).find((c) => c.index === index);
+  return hit ? hit.label : null;
+}
+
+function commentEditor(r, f, locked) {
+  const idx = f._index;
+  const label = previewLabel(idx);
+  const ta = h("textarea", {
+    class: "textarea",
+    rows: "5",
+    "aria-label": "Comment for this finding",
+    testid: "pr-review-finding-comment-input",
+    "data-index": idx,
+    "data-fk": "edit-" + idx,
+    value: S.editing[idx],
+    disabled: locked,
+    oninput: () => {
+      S.editing[idx] = ta.value;
+    },
+    onkeydown: (e) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        cancelEdit(idx);
+      } else if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        saveEdit(r, f);
+      }
+    },
+  });
+  return h(
+    "div",
+    { class: "fedit", testid: "pr-review-finding-editor" },
+    h("div", { class: "fsugg-label" }, icon("pencil"), "Comment posted for this finding"),
+    ta,
+    h(
+      "div",
+      { class: "fedit-bar" },
+      h(
+        "span",
+        { class: "field-hint" },
+        label
+          ? ["Posted as “", h("b", null, label + ":"), " …” — the label is added for you."]
+          : "The comment label is added for you.",
+      ),
+      h("span", { class: "spacer" }),
+      f._comment
+        ? h(
+            "button",
+            {
+              class: "link-btn",
+              type: "button",
+              testid: "pr-review-finding-comment-revert",
+              disabled: locked,
+              onclick: () => {
+                delete S.editing[idx];
+                saveTriage(r, idx, { comment: null }, () => {
+                  S.editing[idx] = ta.value;
+                });
+              },
+            },
+            icon("rerun"),
+            "Use original text",
+          )
+        : null,
+      h(
+        "button",
+        {
+          class: "btn btn-sm",
+          type: "button",
+          testid: "pr-review-finding-comment-cancel",
+          onclick: () => cancelEdit(idx),
+        },
+        "Cancel",
+      ),
+      h(
+        "button",
+        {
+          class: "btn btn-sm btn-primary",
+          type: "button",
+          testid: "pr-review-finding-comment-save",
+          disabled: locked,
+          onclick: () => saveEdit(r, f),
+        },
+        "Save",
+      ),
+    ),
+  );
+}
+
+// ── triage ───────────────────────────────────────────────────────────────────
+
+// A publish reads the triage, so it is frozen while one posts or starts.
+const triageLocked = (r) => publishRunning(r) || S.pub.posting;
+
+let triageSeq = 0;
+
+// Optimistic: the overlay shows the change at once; a failed save drops it
+// again (rollback), runs `onError`, and says why.
+async function saveTriage(r, index, patch, onError) {
+  const k = String(index);
+  const token = ++triageSeq;
+  const prev = triageEntry(r.triage, S.triageOverlay, index);
+  S.triageOverlay[k] = Object.assign({}, prev, patch, { _t: token });
+  redrawDetail();
+  const settle = () => {
+    if (S.triageOverlay[k] && S.triageOverlay[k]._t === token) delete S.triageOverlay[k];
+  };
+  try {
+    const res = await postJSON(P + "/triage", Object.assign({ id: r.id, index }, patch));
+    if (S.detailFor !== r.id) return;
+    settle();
+    if (res && res.review) {
+      S.detail = res.review;
+      detailSig = JSON.stringify(res.review);
+      redrawDetail();
+      maybeLoadPreview(res.review);
+    } else {
+      refresh();
+    }
+  } catch (e) {
+    if (S.detailFor !== r.id) return;
+    settle();
+    if (onError) onError();
+    redrawDetail();
+    toast(e.message, "error");
+  }
+}
+
+function startEdit(f) {
+  S.editing[f._index] = f._comment || defaultComment(f);
+  redrawDetail("edit-" + f._index);
+}
+
+function cancelEdit(idx) {
+  delete S.editing[idx];
+  redrawDetail("ignore-" + idx);
+}
+
+// Saving the finding's own text (or nothing) clears the override.
+function saveEdit(r, f) {
+  const idx = f._index;
+  const draft = S.editing[idx] === undefined ? "" : S.editing[idx];
+  const text = draft.trim();
+  const comment = !text || text === defaultComment(f).trim() ? null : text;
+  delete S.editing[idx];
+  if (comment === (f._comment || null)) {
+    redrawDetail("ignore-" + idx);
+    return;
+  }
+  saveTriage(r, idx, { comment }, () => {
+    S.editing[idx] = draft;
+  });
+}
+
+// ── publish ──────────────────────────────────────────────────────────────────
+
+// A function declaration: S is initialised with it at the top of the file.
+function newPub() {
+  return {
+    decision: null, // the user's pick — never pre-selected
+    body: null, // user-edited body; null = follow the preview's default
+    preview: null,
+    previewKey: null,
+    previewErr: null,
+    previewLoading: false,
+    posting: false,
+  };
+}
+
+// The preview depends on the triage, so it is re-fetched whenever that changes.
+const previewKey = (r) => r.id + "|" + JSON.stringify(r.triage || {});
+
+function maybeLoadPreview(r) {
+  if (!r || r.status !== "done" || !r.result || r.id !== S.detailFor) return;
+  const key = previewKey(r);
+  if (key === S.pub.previewKey) return;
+  loadPreview(r, key);
+}
+
+async function loadPreview(r, key) {
+  S.pub.previewKey = key;
+  S.pub.previewLoading = true;
+  try {
+    const p = await getJSON(P + "/publish-preview?id=" + encodeURIComponent(r.id));
+    if (S.pub.previewKey !== key) return;
+    S.pub.preview = p;
+    S.pub.previewErr = null;
+  } catch (e) {
+    if (S.pub.previewKey !== key) return;
+    S.pub.previewErr = e.message || "Couldn't load the preview.";
+  }
+  S.pub.previewLoading = false;
+  redrawDetail();
+}
+
+const currentBody = () => (S.pub.body !== null ? S.pub.body : (S.pub.preview && S.pub.preview.body) || "");
+
+const DECISION_ICON = { approve: "check", request_changes: "alert", comment: "comment" };
+const DECISION_VERB = { approve: "approves", request_changes: "requests changes on", comment: "comments on" };
+
+async function doPublish(r, decision, body) {
+  if (!decision || S.pub.posting || publishRunning(r)) return;
+  const p = S.pub.preview;
+  const ok = await confirmDialog({
+    title: "Publish to GitHub?",
+    message:
+      "This posts a review that " +
+      DECISION_VERB[decision] +
+      " the pull request for " +
+      r.branch +
+      (p ? " — " + previewCaption(p) + "." : ".") +
+      " Everyone with access to the pull request will see it.",
+    confirmLabel: "Post: " + DECISION_LABELS[decision],
+  });
+  if (!ok) return;
+  S.pub.posting = true;
+  redrawDetail();
+  try {
+    const res = await postJSON(P + "/publish", { id: r.id, decision, body });
+    if (S.detailFor === r.id) {
+      S.pub.decision = null; // a later re-publish is a fresh choice
+      if (res && res.review) {
+        S.detail = res.review;
+        detailSig = JSON.stringify(res.review);
+      }
+    }
+    toast("Publish session started");
+  } catch (e) {
+    toast(e.message, "error");
+  }
+  S.pub.posting = false;
+  redrawDetail();
+  refresh();
+}
+
+function publishCard(r) {
+  const pub = r.publish || null;
+  const running = publishRunning(r);
+  const busy = running || S.pub.posting;
+  const prev = S.pub.preview;
+  const suggested = verdictOf(r);
+
+  const reason = h("span", { class: "form-actions-reason", testid: "pr-review-publish-reason", "aria-live": "polite" });
+  const startBtn = h(
+    "button",
+    {
+      class: "btn btn-primary",
+      type: "button",
+      testid: "pr-review-publish-start",
+      onclick: () => doPublish(r, S.pub.decision, currentBody()),
+    },
+    S.pub.posting ? h("span", { class: "spin" }, icon("loader")) : icon("send"),
+    S.pub.posting ? "Starting…" : "Start publish session",
+  );
+  const resetBtn = h(
+    "button",
+    {
+      class: "link-btn",
+      type: "button",
+      testid: "pr-review-publish-body-reset",
+      onclick: () => {
+        S.pub.body = null;
+        ta.value = currentBody();
+        sync();
+      },
+    },
+    icon("rerun"),
+    "Reset to generated",
+  );
+  const ta = h("textarea", {
+    class: "textarea publish-body",
+    id: "pr-review-publish-body",
+    rows: "7",
+    testid: "pr-review-publish-body",
+    "data-fk": "publish-body",
+    value: currentBody(),
+    placeholder: prev ? "Optional — a short summary posted with the review." : "Loading the generated summary…",
+    disabled: busy,
+    oninput: () => {
+      S.pub.body = ta.value;
+      sync();
+    },
+  });
+  function sync() {
+    const why = S.pub.posting ? null : publishBlockReason({ decision: S.pub.decision, body: currentBody(), running });
+    startBtn.disabled = busy || !!why;
+    reason.textContent = why || "";
+    reason.hidden = !why;
+    resetBtn.hidden = busy || S.pub.body === null || !prev || S.pub.body === (prev.body || "");
+  }
+
+  const radios = h("div", {
+    class: "decision-group",
+    role: "radiogroup",
+    "aria-labelledby": "pr-review-decision-label",
+    testid: "pr-review-decision",
+  });
+  for (const d of DECISIONS) {
+    radios.appendChild(
+      h(
+        "label",
+        { class: "decision-opt decision-" + d.id, "data-decision": d.id },
+        h("input", {
+          type: "radio",
+          name: "pr-review-decision",
+          value: d.id,
+          testid: "pr-review-decision-" + d.id,
+          "data-fk": "decision-" + d.id,
+          checked: S.pub.decision === d.id,
+          disabled: busy,
+          onchange: () => {
+            S.pub.decision = d.id;
+            sync();
+          },
+        }),
+        h(
+          "span",
+          { class: "decision-text" },
+          h("span", { class: "decision-label" }, icon(DECISION_ICON[d.id]), d.label),
+          h("span", { class: "decision-hint" }, d.hint),
+        ),
+      ),
+    );
+  }
+
+  const card = h(
+    "section",
+    {
+      class: "card publish-card" + (busy ? " is-busy" : ""),
+      testid: "pr-review-publish",
+      "aria-labelledby": "pr-review-publish-title",
+    },
+    h(
+      "div",
+      { class: "publish-head" },
+      h("span", { class: "publish-icon" }, icon("send")),
+      h(
+        "div",
+        { class: "publish-head-text" },
+        h("h2", { id: "pr-review-publish-title" }, "Publish review"),
+        h(
+          "p",
+          null,
+          "Triage the findings below, then post your review to the pull request on GitHub. The decision is yours",
+          suggested ? [" — the model only suggests ", h("b", null, VERDICT_LABELS[suggested] || suggested), "."] : ".",
+        ),
+      ),
+    ),
+    pub ? publishStatus(r, pub) : null,
+    h(
+      "div",
+      { class: "field-label", id: "pr-review-decision-label" },
+      "Your decision",
+      h("span", { class: "req" }, "*"),
+    ),
+    radios,
+    h(
+      "div",
+      { class: "field publish-field" },
+      h(
+        "div",
+        { class: "publish-label-row" },
+        h("label", { class: "field-label", for: "pr-review-publish-body" }, "Review body"),
+        resetBtn,
+      ),
+      ta,
+    ),
+    previewBlock(),
+    h("div", { class: "publish-actions" }, startBtn, reason),
+  );
+  sync();
+  return card;
+}
+
+function previewBlock() {
+  const p = S.pub.preview;
+  const wrap = h("div", {
+    class: "publish-preview",
+    testid: "pr-review-publish-preview",
+    "data-loading": S.pub.previewLoading ? "true" : null,
+  });
+  if (!p) {
+    if (S.pub.previewErr) {
+      append(wrap, [
+        h("span", { class: "preview-err" }, icon("alert"), "Couldn't load the preview: " + S.pub.previewErr),
+        h(
+          "button",
+          {
+            class: "link-btn",
+            type: "button",
+            onclick: () => {
+              S.pub.previewKey = null;
+              maybeLoadPreview(S.detail);
+            },
+          },
+          icon("rerun"),
+          "Try again",
+        ),
+      ]);
+    } else {
+      append(wrap, [
+        h("span", { class: "spin" }, icon("loader")),
+        h("span", { class: "muted" }, "Preparing the preview…"),
+      ]);
+    }
+    return wrap;
+  }
+  const items = (p.comments || [])
+    .map((c) => ({
+      index: c.index,
+      inline: true,
+      where: formatLocation({ file: c.path, line: c.line, end_line: c.end_line }) || c.path,
+      text: c.text,
+    }))
+    .concat((p.body_items || []).map((b) => ({ index: b.index, inline: false, text: b.text })));
+  const caption = h(
+    "span",
+    { class: "preview-caption", testid: "pr-review-publish-preview-caption" },
+    previewCaption(p),
+  );
+  const updating = S.pub.previewLoading
+    ? h("span", { class: "spin preview-updating", title: "Updating…" }, icon("loader"))
+    : null;
+  if (!items.length) {
+    append(wrap, [icon("comment"), caption, updating, h("span", { class: "muted" }, "— only the body is posted.")]);
+    return wrap;
+  }
+  wrap.appendChild(
+    fold(
+      "pubPreview",
+      [caption, updating],
+      h(
+        "ul",
+        { class: "preview-list" },
+        items.map((it) =>
+          h(
+            "li",
+            {
+              class: "preview-item",
+              testid: "pr-review-publish-preview-item",
+              "data-index": it.index,
+              "data-kind": it.inline ? "inline" : "body",
+            },
+            h(
+              "div",
+              { class: "preview-where" },
+              it.inline
+                ? [icon("file"), h("span", { class: "mono" }, it.where)]
+                : [icon("comment"), "In the review body"],
+            ),
+            h("div", { class: "md preview-text", html: markdownToHtml(it.text || "") }),
+          ),
+        ),
+      ),
+      { testid: "pr-review-publish-preview-list" },
+    ),
+  );
+  return wrap;
+}
+
+function publishStatus(r, pub) {
+  const st = pub.status;
+  const started = toMs(pub.started_at);
+  const finished = toMs(pub.finished_at);
+  const sessionBtn = pub.session_id
+    ? h(
+        "button",
+        {
+          class: "btn btn-sm",
+          type: "button",
+          testid: "pr-review-publish-session",
+          onclick: () => openSession(pub.session_id),
+        },
+        icon("session"),
+        "Open session",
+      )
+    : null;
+  const box = h("div", {
+    class: "publish-status ps-" + st,
+    testid: "pr-review-publish-status",
+    "data-status": st,
+    role: "status",
+  });
+  if (st === "running") {
+    append(box, [
+      h("span", { class: "ps-icon spin" }, icon("loader")),
+      h(
+        "div",
+        { class: "ps-main" },
+        h("div", { class: "ps-title" }, "Posting to GitHub…"),
+        h(
+          "div",
+          { class: "ps-sub" },
+          DECISION_LABELS[pub.decision] || pub.decision,
+          started !== null ? [" · started ", relEl(started)] : null,
+        ),
+      ),
+      h("div", { class: "ps-actions" }, sessionBtn),
+    ]);
+  } else if (st === "posted") {
+    const url = safeUrl(pub.pr_url);
+    const n = pub.comments_posted;
+    append(box, [
+      h("span", { class: "ps-icon" }, icon("check")),
+      h(
+        "div",
+        { class: "ps-main" },
+        h("div", { class: "ps-title" }, "Posted — " + (DECISION_DONE[pub.decision] || "review")),
+        h(
+          "div",
+          { class: "ps-sub" },
+          typeof n === "number"
+            ? n === 0
+              ? "No inline comments"
+              : n + (n === 1 ? " inline comment" : " inline comments")
+            : null,
+          typeof n === "number" && finished !== null ? " · " : null,
+          finished !== null ? relEl(finished) : null,
+        ),
+      ),
+      h(
+        "div",
+        { class: "ps-actions" },
+        url
+          ? h(
+              "a",
+              {
+                class: "btn btn-sm",
+                href: url,
+                target: "_blank",
+                rel: "noopener noreferrer",
+                testid: "pr-review-publish-pr-link",
+              },
+              icon("external"),
+              "View on GitHub",
+            )
+          : null,
+        sessionBtn,
+      ),
+    ]);
+  } else if (st === "failed") {
+    append(box, [
+      h("span", { class: "ps-icon" }, icon("alert")),
+      h(
+        "div",
+        { class: "ps-main" },
+        h("div", { class: "ps-title" }, "Post failed"),
+        h(
+          "pre",
+          { class: "ps-error", testid: "pr-review-publish-error" },
+          pub.error || "The publish session stopped without posting.",
+        ),
+      ),
+      h(
+        "div",
+        { class: "ps-actions" },
+        h(
+          "button",
+          {
+            class: "btn btn-sm btn-primary",
+            type: "button",
+            testid: "pr-review-publish-retry",
+            disabled: S.pub.posting || !pub.decision,
+            title: pub.decision
+              ? "Post again: " + (DECISION_LABELS[pub.decision] || pub.decision) + ", same body"
+              : null,
+            onclick: () => doPublish(r, pub.decision, typeof pub.body === "string" ? pub.body : currentBody()),
+          },
+          icon("rerun"),
+          "Retry",
+        ),
+        sessionBtn,
+      ),
+    ]);
+  }
+  return box;
+}
+
 function resultSections(r) {
   const res = r.result;
-  const groups = groupFindings(res.findings);
+  // Triage + publish open once the review is done; ignored findings leave
+  // the severity groups for a collapsed group of their own.
+  const triage = r.status === "done";
+  const split = triage ? splitTriage(res.findings, r.triage, S.triageOverlay) : splitTriage(res.findings, null, null);
+  const ctx = { r, triage, ignored: false };
+  const groups = groupFindings(split.kept);
   const changeCount = SEVERITIES.reduce((n, s) => n + groups[s].length, 0);
   const out = [];
 
@@ -2016,9 +2777,15 @@ function resultSections(r) {
         h("div", { class: "card-title" }, "Why it's needed"),
         mdBlock(res.why, "Not stated."),
       ),
-      h("div", { class: "card", testid: "pr-review-ticket" }, h("div", { class: "card-title" }, "Ticket"), ticketView(res.ticket)),
+      h(
+        "div",
+        { class: "card", testid: "pr-review-ticket" },
+        h("div", { class: "card-title" }, "Ticket"),
+        ticketView(res.ticket),
+      ),
     ),
   );
+  if (triage) out.push(publishCard(r));
 
   // Recommended changes, grouped by severity, with filter toggles.
   const groupsBox = h("div", { testid: "pr-review-groups" });
@@ -2076,8 +2843,16 @@ function resultSections(r) {
   function drawGroups() {
     clear(groupsBox);
     if (!changeCount) {
+      const allIgnored = split.ignored.some((f) => f.kind !== "praise");
       groupsBox.appendChild(
-        h("div", { class: "none-note ok", testid: "pr-review-no-changes" }, icon("check"), "No changes recommended."),
+        allIgnored
+          ? h("div", { class: "none-note", testid: "pr-review-no-changes" }, "Every recommended change is ignored.")
+          : h(
+              "div",
+              { class: "none-note ok", testid: "pr-review-no-changes" },
+              icon("check"),
+              "No changes recommended.",
+            ),
       );
       return;
     }
@@ -2096,7 +2871,7 @@ function resultSections(r) {
           h("span", { class: "line" }),
         ),
       );
-      for (const f of items) groupsBox.appendChild(findingCard(f, s));
+      for (const f of items) groupsBox.appendChild(findingCard(f, s, ctx));
     }
     if (!shown) groupsBox.appendChild(h("div", { class: "none-note" }, "No findings match the current filters."));
   }
@@ -2126,14 +2901,38 @@ function resultSections(r) {
           { class: "section-head" },
           h("h2", null, "Praise", h("span", { class: "count-chip" }, String(groups.praise.length))),
         ),
-        groups.praise.map((f) => findingCard(f, "praise")),
+        groups.praise.map((f) => findingCard(f, "praise", ctx)),
+      ),
+    );
+  }
+
+  if (split.ignored.length) {
+    const n = split.ignored.length;
+    out.push(h("div", { class: "section-head" }));
+    out.push(
+      fold(
+        "ignored",
+        ["Ignored ", h("span", { class: "count-chip" }, String(n))],
+        h(
+          "div",
+          { class: "ignored-list" },
+          h("div", { class: "field-hint" }, "Left out of the published review. Restore one to include it again."),
+          split.ignored.map((f) =>
+            findingCard(f, f.kind === "praise" ? "praise" : SEVERITIES.includes(f.severity) ? f.severity : "minor", {
+              r,
+              triage,
+              ignored: true,
+            }),
+          ),
+        ),
+        { standalone: true, testid: "pr-review-ignored-group" },
       ),
     );
   }
 
   const failed = res.reviewers_failed || [];
   const dropped = res.dropped || [];
-  if (failed.length || dropped.length) out.push(h("div", { class: "section-head" }));
+  if ((failed.length || dropped.length) && !split.ignored.length) out.push(h("div", { class: "section-head" }));
   if (failed.length) {
     out.push(
       h(

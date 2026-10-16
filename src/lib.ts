@@ -17,6 +17,7 @@ import {
   toolStep,
   toolSubmit,
 } from "./review";
+import { onPublishEnded, toolPublish, toolPublishResult, toolTriage } from "./publish";
 
 /// The agent-facing tools, keyed by the name declared in the manifest. Each
 /// takes the caller `context` as its second argument — core builds it from the
@@ -35,6 +36,11 @@ export const TOOLS: Record<string, (args: any, context: any) => any> = {
   pr_review_list_folders: toolListFolders,
   pr_review_get_prompt: toolGetPrompt,
   pr_review_set_prompt: toolSetPrompt,
+  // Triage and publish — the decision is always the caller's.
+  pr_review_triage: toolTriage,
+  pr_review_publish: toolPublish,
+  // Publish sessions report back.
+  pr_review_publish_result: toolPublishResult,
 };
 
 export function dispatch(hook: string, payload: any): string {
@@ -49,7 +55,8 @@ export function dispatch(hook: string, payload: any): string {
       // A notification: the verdict is ignored host-side, so an error is
       // reported in the payload rather than as a cancel.
       try {
-        return allow(onAgentEnded(payload));
+        // A publish session has its own watchdog; anything else is a review.
+        return allow(onPublishEnded(payload) ?? onAgentEnded(payload));
       } catch (e) {
         return allow({ ok: false, error: errMsg(e) });
       }

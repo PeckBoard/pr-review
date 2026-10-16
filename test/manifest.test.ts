@@ -33,6 +33,9 @@ describe("manifest", () => {
         "POST /api/plugin-ui/pr-review/cancel",
         "POST /api/plugin-ui/pr-review/delete",
         "POST /api/plugin-ui/pr-review/settings",
+        "POST /api/plugin-ui/pr-review/triage",
+        "GET /api/plugin-ui/pr-review/publish-preview",
+        "POST /api/plugin-ui/pr-review/publish",
       ].sort(),
     );
   });

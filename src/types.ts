@@ -92,7 +92,38 @@ export interface Review {
   requested_by?: string | null;
   notify?: boolean;
   result: Result | null;
+  /// Per-finding triage, keyed by the finding's index in result.findings.
+  triage?: Record<string, TriageEntry>;
+  /// The latest publish of this review to GitHub (null until published).
+  publish?: Publish | null;
   /// Watchdog: consecutive runs that ended without progress or a submit.
   /// Internal — stripped from route responses.
+  nudges?: number;
+}
+
+/// The reviewer's own call — never derived from the findings or the model's
+/// verdict.
+export type Decision = "approve" | "request_changes" | "comment";
+export const DECISIONS: Decision[] = ["approve", "request_changes", "comment"];
+
+export interface TriageEntry {
+  ignored: boolean;
+  /// Replacement comment text; null keeps the finding's own wording.
+  comment: string | null;
+}
+
+export interface Publish {
+  decision: Decision;
+  body: string;
+  status: "running" | "posted" | "failed";
+  session_id: string | null;
+  pr_url: string | null;
+  error: string | null;
+  comments_posted: number | null;
+  started_at: string;
+  finished_at: string | null;
+  /// Session that published via pr_review_publish (gets the outcome).
+  requested_by: string | null;
+  /// Internal watchdog counter — stripped from route responses.
   nudges?: number;
 }

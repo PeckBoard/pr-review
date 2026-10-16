@@ -305,6 +305,71 @@ export function manifestJson(): string {
           additionalProperties: false,
         },
       },
+      {
+        name: "pr_review_triage",
+        description:
+          "Triage one finding of a DONE review before publishing: ignore/restore it, or replace " +
+          "the comment text that will be posted. index = the finding's position in " +
+          "result.findings (see pr_review_get). Returns the publish preview (inline comments, " +
+          "body items, ignored count).",
+        input_schema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Review id." },
+            index: { type: "integer", minimum: 0 },
+            ignored: { type: "boolean", description: "true = leave this finding out of the posted review." },
+            comment: {
+              type: ["string", "null"],
+              description: "Replacement comment text; null or empty restores the finding's own wording.",
+            },
+          },
+          required: ["id", "index"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_publish",
+        description:
+          "Post a DONE review to the branch's GitHub PR as ONE review: the non-ignored findings " +
+          "become inline comments (Conventional Comments labels), plus a summary body. The " +
+          "decision is REQUIRED and must come from the user — never pick it from the findings or " +
+          "the model's suggested verdict; ask the user if they have not said. Runs in a new " +
+          "publish session using `gh`; this session is messaged when it is posted or fails.",
+        input_schema: {
+          type: "object",
+          properties: {
+            id: { type: "string", description: "Review id." },
+            decision: {
+              type: "string",
+              enum: ["approve", "request_changes", "comment"],
+              description: "The user's decision.",
+            },
+            body: {
+              type: "string",
+              description: "Review summary body. Omit to use the generated summary / why / ticket.",
+            },
+          },
+          required: ["id", "decision"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_publish_result",
+        description:
+          "Report the outcome of posting the GitHub review. Only works from a PR review publish " +
+          "session. ok:true with pr_url + comments_posted, or ok:false with GitHub's error.",
+        input_schema: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            pr_url: { type: "string" },
+            comments_posted: { type: "integer", minimum: 0 },
+            error: { type: "string" },
+          },
+          required: ["ok"],
+          additionalProperties: false,
+        },
+      },
     ],
   };
   return JSON.stringify(manifest);
