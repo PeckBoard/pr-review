@@ -571,6 +571,7 @@ a.ticket-id:hover { text-decoration: underline; }
 .publish-head p b { color: var(--text); font-weight: 600; }
 .decision-group { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
 @media (max-width: 640px) { .decision-group { grid-template-columns: 1fr; } }
+.decision-group.rerun-mode-group { grid-template-columns: 1fr; margin-bottom: 0; }
 .decision-opt {
   display: flex; gap: 10px; align-items: flex-start;
   padding: 10px 12px; border: 1px solid var(--border-strong); border-radius: 10px;

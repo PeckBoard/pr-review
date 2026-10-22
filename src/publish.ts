@@ -173,8 +173,8 @@ You post ONE GitHub pull-request review that a human has already decided on. You
 
 ## Steps
 1. In the repository folder, find the open PR for the branch: \`gh pr view <branch> --json number,url,headRefOid,state\` (try \`origin/<branch>\` naming variations only if that fails). Get the repo with \`gh repo view --json nameWithOwner\`. If \`gh\` is missing or not authenticated, or there is no open PR, report failure (step 4) with the exact reason.
-2. Write the review payload to a temp file OUTSIDE the repo working tree (\`mktemp\`) as JSON: \`{"event": <EVENT>, "body": <BODY>, "commit_id": <headRefOid>, "comments": [{"path", "line", "side": "RIGHT", "body"} ...]}\` — for a multi-line comment add \`"start_line"\` (the first line) and \`"start_side": "RIGHT"\` with \`"line"\` as the last line. Then: \`gh api repos/<owner>/<repo>/pulls/<number>/reviews --method POST --input <file>\`. Delete the temp file afterwards.
-3. If GitHub rejects inline comments (422, e.g. a line is not part of the diff), move ONLY those comments into the body under a "Comments outside the diff" heading as \`path:line — text\`, and post again. Never drop a comment and never change EVENT. If GitHub refuses the EVENT itself (e.g. you cannot approve your own PR), do NOT fall back to another event — report failure with GitHub's message.
+2. Write the review payload to a temp file OUTSIDE the repo working tree (\`mktemp\`) as JSON: \`{"event": <EVENT>, "body": <BODY>, "commit_id": <COMMIT>, "comments": [{"path", "line", "side": "RIGHT", "body"} ...]}\` — <COMMIT> is the given \`commit_id\` (the commit that was reviewed, so line numbers match) when present, else \`headRefOid\`; for a multi-line comment add \`"start_line"\` (the first line) and \`"start_side": "RIGHT"\` with \`"line"\` as the last line. Then: \`gh api repos/<owner>/<repo>/pulls/<number>/reviews --method POST --input <file>\`. Delete the temp file afterwards.
+3. If GitHub rejects the given \`commit_id\` (e.g. it was force-pushed out of the PR), post again once with \`headRefOid\`. If GitHub rejects inline comments (422, e.g. a line is not part of the diff), move ONLY those comments into the body under a "Comments outside the diff" heading as \`path:line — text\`, and post again. Never drop a comment and never change EVENT. If GitHub refuses the EVENT itself (e.g. you cannot approve your own PR), do NOT fall back to another event — report failure with GitHub's message.
 4. Report with \`pr_review_publish_result\`: on success \`{ok: true, pr_url, comments_posted}\` (inline comments actually posted); on failure \`{ok: false, error}\`. Then end your turn.
 
 Never checkout, commit, push, or edit files in the repository.`;
@@ -183,6 +183,7 @@ Never checkout, commit, push, or edit files in the repository.`;
 export function publishKickoff(r: Review, p: Publish, preview: Preview): string {
   const payload = {
     branch: r.branch,
+    commit_id: r.commit || undefined,
     event: DECISION_EVENT[p.decision],
     body:
       p.body +

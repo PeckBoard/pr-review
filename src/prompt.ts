@@ -110,18 +110,24 @@ export function contractSection(review: Review): string {
   const base = review.base
     ? `\`${review.base}\``
     : "auto-detect: `origin/HEAD`, then `main`, then `master` — use the first that exists";
+  const commit = review.pinned && review.commit ? review.commit : null;
+  const target = commit
+    ? `1. Review EXACTLY commit \`${commit}\` — do NOT review the branch's newer commits. Check it exists with \`git cat-file -e ${commit}^{commit}\`; only if it is missing, \`git fetch --all --prune\` and check again (abort if it is still missing).
+2. The commit ref is \`${commit}\`: use it wherever this prompt says \`<branch>\` (diff, log, worktree).
+3. Create a detached worktree inside the repository folder so subagents (which are confined to the project folder) can read it: add \`/pr-review-worktrees/\` to \`.git/info/exclude\` (local only, never committed), then \`git worktree add --detach pr-review-worktrees/${review.id} ${commit}\`.`
+    : `1. \`git fetch --all --prune\` (ignore failure when there is no remote) so the review sees the branch's latest changes.
+2. Resolve the branch ref (\`<branch>\`, else \`origin/<branch>\`) — prefer \`origin/<branch>\` when it is ahead of the local branch.
+3. Create a detached worktree inside the repository folder so subagents (which are confined to the project folder) can read it: add \`/pr-review-worktrees/\` to \`.git/info/exclude\` (local only, never committed), then \`git worktree add --detach pr-review-worktrees/${review.id} <branch-ref>\`. Report the commit you checked out: \`pr_review_step\` with step \`context\` and \`commit\` = \`git -C pr-review-worktrees/${review.id} rev-parse HEAD\` (the full SHA).`;
   return `## Review contract (fixed — always follow)
 
 - Review id: \`${review.id}\`
-- Branch under review: \`${review.branch}\`
+- Branch under review: \`${review.branch}\`${commit ? `\n- Commit under review (pinned): \`${commit}\`` : ""}
 - Base: ${base}
 - Repository folder: \`${review.folder_path}\`
 
 ### Never touch the user's working tree
-NEVER \`git checkout\`, \`git switch\`, \`git reset\`, \`git stash\`, commit, or edit files in the user's checkout — they may have uncommitted work. Instead:
-1. \`git fetch --all --prune\` (ignore failure when there is no remote).
-2. Resolve the branch ref (\`<branch>\`, else \`origin/<branch>\`).
-3. Create a detached worktree inside the repository folder so subagents (which are confined to the project folder) can read it: add \`/pr-review-worktrees/\` to \`.git/info/exclude\` (local only, never committed), then \`git worktree add --detach pr-review-worktrees/${review.id} <branch-ref>\`.
+NEVER \`git checkout\`, \`git switch\`, \`git reset\`, \`git stash\`, \`git pull\`, commit, or edit files in the user's checkout — they may have uncommitted work. Instead:
+${target}
 4. Review ONLY inside that worktree; pass its absolute path to every reviewer.
 5. At the end — success or failure — \`git worktree remove --force pr-review-worktrees/${review.id}\`, delete \`pr-review-worktrees/${review.id}.context\`, and remove the \`pr-review-worktrees\` directory if it is empty.
 
@@ -154,7 +160,10 @@ export function kickoffMessage(review: Review): string {
     `Review id: ${review.id}.\n\n` +
     "Follow your system prompt: create the detached worktree, gather context once, run the " +
     "parallel reviewers, merge, verify, then call pr_review_submit. Report each step with " +
-    "pr_review_step." +
+    `Review branch \`${review.branch}\` against base ${base}.\n` +
+    (review.pinned && review.commit
+      ? `Review exactly commit ${review.commit} (a same-commit re-run) — not the branch's newer commits.\n`
+      : "Fetch first so you review the branch's latest changes.\n") +
     (custom ? `\n\nAdditional instructions for this review:\n${custom}` : "")
   );
 }

@@ -7,7 +7,7 @@
 // version makes the registry's "upgrade available" chip permanent.
 import { version as VERSION } from "../package.json";
 import { PAGE_PATH, UI_ROUTES } from "./http";
-import { PROVIDER_STATUSES, SEVERITIES, STEPS, VERDICTS } from "./types";
+import { PROVIDER_STATUSES, RERUN_MODES, SEVERITIES, STEPS, VERDICTS } from "./types";
 
 const DESCRIPTION =
   "PR Review: review a git branch like a pull request. Pick a folder and a branch; a " +
@@ -113,6 +113,12 @@ export function manifestJson(): string {
               type: "string",
               enum: PROVIDER_STATUSES,
               description: "That reviewer's status. Required with provider.",
+            },
+            commit: {
+              type: "string",
+              description:
+                "The full commit SHA you created the worktree at. Report it once, with the " +
+                "context step — it is what a 'same commit' re-run reviews again.",
             },
             abort_reason: {
               type: "string",
@@ -251,11 +257,20 @@ export function manifestJson(): string {
       },
       {
         name: "pr_review_rerun",
-        description: "Start a new review with the same branch, folder, model and prompt as an earlier one.",
+        description:
+          "Start a new review with the same branch, folder, model and prompt as an earlier one. " +
+          "mode 'latest' (default) fetches and reviews the branch's newest commit; mode 'current' " +
+          "reviews the exact commit the earlier review used (fails if it did not record one).",
         input_schema: {
           type: "object",
           properties: {
             id: { type: "string", description: "Review id to repeat." },
+            mode: {
+              type: "string",
+              enum: RERUN_MODES,
+              description:
+                "latest = pull the branch's latest changes (default); current = same commit as before.",
+            },
             notify: { type: "boolean", description: "Message this session when it finishes (default true)." },
           },
           required: ["id"],

@@ -611,10 +611,95 @@ function miniSteps(r) {
 
 // ── actions ──────────────────────────────────────────────────────────────────
 
+// Re-run asks which commit to review: the branch's latest changes (fetched
+// again) or the exact commit this review used. "Same commit" needs a recorded
+// commit — reviews from before 0.4.0, or ones that failed early, have none.
+function rerunModeDialog(r) {
+  return new Promise((resolve) => {
+    let mode = "latest";
+    let result = null;
+    const short = r.commit ? r.commit.slice(0, 7) : null;
+    const opts = [
+      {
+        id: "latest",
+        icon: "rerun",
+        label: "Pull latest changes",
+        hint: "Fetch the branch and review its newest commit.",
+      },
+      {
+        id: "current",
+        icon: "clock",
+        label: "Same commit",
+        hint: short
+          ? "Review commit " + short + " again, ignoring anything pushed since."
+          : "Unavailable — this review did not record which commit it reviewed.",
+        disabled: !short,
+      },
+    ];
+    const group = h("div", {
+      class: "decision-group rerun-mode-group",
+      role: "radiogroup",
+      "aria-label": "Which commit to review",
+      testid: "pr-review-rerun-mode",
+    });
+    for (const o of opts) {
+      group.appendChild(
+        h(
+          "label",
+          { class: "decision-opt", "data-mode": o.id },
+          h("input", {
+            type: "radio",
+            name: "pr-review-rerun-mode",
+            value: o.id,
+            testid: "pr-review-rerun-mode-" + o.id,
+            checked: o.id === mode,
+            disabled: !!o.disabled,
+            onchange: () => {
+              mode = o.id;
+            },
+          }),
+          h(
+            "span",
+            { class: "decision-text" },
+            h("span", { class: "decision-label" }, icon(o.icon), o.label),
+            h("span", { class: "decision-hint" }, o.hint),
+          ),
+        ),
+      );
+    }
+    const okBtn = h(
+      "button",
+      {
+        class: "btn btn-primary",
+        type: "button",
+        testid: "pr-review-rerun-confirm",
+        onclick: () => {
+          result = mode;
+          m.close();
+        },
+      },
+      icon("rerun"),
+      "Re-run",
+    );
+    const cancelBtn = h("button", { class: "btn", type: "button", onclick: () => m.close() }, "Cancel");
+    const m = openModal({
+      title: "Re-run review of " + r.branch,
+      size: "sm",
+      testid: "pr-review-rerun-dialog",
+      body: group,
+      foot: [h("span", { class: "spacer" }), cancelBtn, okBtn],
+      initialFocus: okBtn,
+      onClose: () => resolve(result),
+    });
+  });
+}
+
 async function doRerun(r) {
+  const mode = await rerunModeDialog(r);
+  if (!mode) return;
   try {
-    const res = await postJSON(P + "/rerun", { id: r.id });
-    toast("Re-run started");
+    const res = await postJSON(P + "/rerun", { id: r.id, mode });
+    toast(mode === "current" ? "Re-run started on the same commit" : "Re-run started on the latest changes");
     const id = res && res.review && res.review.id;
     if (S.route.view === "review" && id && id !== S.route.id) go(reviewHash(id));
     else refresh();
@@ -1832,6 +1917,17 @@ function detailHeader(r) {
           h("span", { title: r.folder_path || "" }, icon("folder"), h("b", null, r.folder_name || "—")),
           r.folder_path ? h("span", { class: "mono", title: "Folder path" }, r.folder_path) : null,
           r.model ? h("span", { title: r.model }, icon("cpu"), modelName(models, r.model)) : null,
+          r.commit
+            ? h(
+                "span",
+                {
+                  class: "mono",
+                  testid: "pr-review-commit",
+                  title: (r.pinned ? "Pinned commit " : "Reviewed commit ") + r.commit,
+                },
+                r.commit.slice(0, 7) + (r.pinned ? " (pinned)" : ""),
+              )
+            : null,
           created !== null ? h("span", null, icon("clock"), "Started ", relEl(created)) : null,
           el !== null ? h("span", null, icon("timer"), active ? "Running for " : "Took ", elapsedEl(r)) : null,
         ),

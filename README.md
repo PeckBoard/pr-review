@@ -52,8 +52,10 @@ All JSON, under `/api/plugin-ui/pr-review/`. Errors return `400 {error}`.
 - `POST start {branch, base?, folder_id, model?, prompt?}` → `{review}`.
   The branch and base must be plain ref names. With no model, the plugin picks
   the most capable claude model (opus preferred).
-- `POST rerun {id}` → `{review}`: a **new** review with a fresh session and
-  the same inputs. The old review keeps its result.
+- `POST rerun {id, mode?}` → `{review}`: a **new** review with a fresh session and
+  the same inputs. The old review keeps its result. `mode` is `latest`
+  (default: fetch and review the branch's newest commit) or `current` (review
+  the exact commit the old review recorded in `commit`; fails if it has none).
 - `POST cancel {id}` / `POST delete {id}` → `{ok: true}`. Delete leaves the
   session (your transcript) in place.
 - `POST settings {global_prompt}` → `{settings}`. An empty string resets to
@@ -75,8 +77,8 @@ Everything the page does is also an MCP tool, so a session can run reviews:
   failure reason.
 - `pr_review_list({status?, folder_id?, limit?})`, `pr_review_get({id})` —
   progress, and the full result once done.
-- `pr_review_rerun({id, notify?})`, `pr_review_cancel({id})`,
-  `pr_review_delete({id})`.
+- `pr_review_rerun({id, mode?, notify?})` — `mode` as in `POST rerun`;
+  `pr_review_cancel({id})`, `pr_review_delete({id})`.
 - `pr_review_list_folders()` — target folders, `current` marking the caller's.
 - `pr_review_get_prompt()` / `pr_review_set_prompt({global_prompt})` — the
   global prompt; an empty string restores the default.
@@ -86,10 +88,12 @@ A review session itself is refused all of these, so reviews never recurse.
 ### Reporting Back (Review Sessions Only)
 
 - `pr_review_step({step, note?, provider?, provider_status?, abort_reason?})`
-  updates the step, the progress log and per-provider status. `abort_reason`
-  marks the review failed, for reviews that cannot run at all (for example, the
-  branch does not exist).
-- `pr_review_submit({result})` validates strictly. When the result is invalid
+- `pr_review_step({step, note?, provider?, provider_status?, commit?, abort_reason?})`
+  updates the step, the progress log and per-provider status. `commit` records
+  the full SHA the worktree was created at (what a same-commit re-run reviews;
+  a pinned review rejects any other SHA). `abort_reason` marks the review
+  failed, for reviews that cannot run at all (for example, the branch does not
+  exist).
   it returns every problem with its JSON path, so the agent can fix them and
   resubmit. When it is valid, the review becomes `done` and the counts are
   computed.

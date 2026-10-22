@@ -33,6 +33,8 @@ import {
   DEFAULT_PROVIDERS,
   PROVIDER_STATUSES,
   ProviderStatus,
+  RERUN_MODES,
+  RerunMode,
   Review,
   STEPS,
   Step,
@@ -80,6 +82,15 @@ function validateRef(label: string, ref: string): void {
       `${label} '${ref}' is not a valid branch name (letters, digits, . _ / @ + - only)`,
     );
   }
+}
+
+// A full commit SHA (sha1 or sha256 object format).
+const SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function validateCommit(sha: string): string {
+  const s = sha.toLowerCase();
+  if (!SHA_RE.test(s)) throw new Error(`commit '${sha}' must be a full 40- or 64-character hex SHA`);
+  return s;
 }
 
 function isActive(r: Review): boolean {
@@ -270,6 +281,9 @@ interface StartInput {
   /// Set when a session started the review via `pr_review_start`.
   requestedBy?: string | null;
   notify?: boolean;
+  /// Review exactly this commit (a "same commit" re-run); omit to fetch and
+  /// review the branch's latest commit.
+  commit?: string | null;
 }
 
 function launch(input: StartInput): Review {
@@ -298,8 +312,15 @@ function launch(input: StartInput): Review {
     requested_by: input.requestedBy ?? null,
     notify: !!input.notify,
     nudges: 0,
+    commit: input.commit ?? null,
+    pinned: !!input.commit,
   };
-  addLog(review, "starting", fromTool ? "review queued by a session" : "review queued");
+  addLog(
+    review,
+    "starting",
+    (fromTool ? "review queued by a session" : "review queued") +
+      (input.commit ? ` — pinned to commit ${input.commit.slice(0, 12)}` : ""),
+  );
   saveReview(review);
 
   const name = `PR review: ${input.branch}`;
@@ -366,10 +387,25 @@ export function startReview(body: any): any {
   return { review: publicReview(launch({ branch, base, folder, model, prompt })) };
 }
 
-/// POST rerun {id} — a NEW review (fresh session) with the same inputs; the
-/// old one keeps its result.
+/// The launch inputs for a re-run of `prior`. `latest` (default) fetches and
+/// resolves the branch again; `current` pins the commit `prior` reviewed.
+function rerunInputs(prior: Review, modeArg: unknown): { commit: string | null } {
+  const mode = (str(modeArg) || "latest") as RerunMode;
+  if (!RERUN_MODES.includes(mode)) throw new Error(`mode must be one of ${RERUN_MODES.join(", ")}`);
+  if (mode === "latest") return { commit: null };
+  if (!prior.commit) {
+    throw new Error(
+      "this review did not record which commit it reviewed — re-run it on the latest changes instead",
+    );
+  }
+  return { commit: prior.commit };
+}
+
+/// POST rerun {id, mode?} — a NEW review (fresh session) with the same
+/// inputs; the old one keeps its result.
 export function rerunReview(body: any): any {
   const prior = requireReview(body?.id);
+  const { commit } = rerunInputs(prior, body?.mode);
   const folder = listFolders().find((f) => f.id === prior.folder_id) ?? {
     id: prior.folder_id,
     name: prior.folder_name,
@@ -383,6 +419,7 @@ export function rerunReview(body: any): any {
         folder,
         model: prior.model,
         prompt: prior.custom_prompt,
+        commit,
       }),
     ),
   };
@@ -440,7 +477,7 @@ export function reviewForCaller(context: any): Review {
   return review;
 }
 
-/** pr_review_step({step, note?, provider?, provider_status?, abort_reason?}) */
+/** pr_review_step({step, note?, provider?, provider_status?, commit?, abort_reason?}) */
 export function toolStep(args: any, context: any): any {
   const r = reviewForCaller(context);
   const step = str(args?.step) as Step;
@@ -458,11 +495,21 @@ export function toolStep(args: any, context: any): any {
   if (provider && !/^[a-z0-9_-]{1,40}$/.test(provider)) {
     throw new Error("provider must be a short provider id, e.g. claude, codex, grok");
   }
-
+  const commitArg = str(args?.commit);
+  const commit = commitArg ? validateCommit(commitArg) : null;
+  if (commit && r.pinned && commit !== r.commit) {
+    throw new Error(
+      `this review is pinned to commit ${r.commit} — create the worktree at that commit, not ${commit}`,
+    );
+  }
   r.status = "running";
   r.step = step;
   r.nudges = 0; // progress resets the watchdog
   const note = str(args?.note);
+  if (commit && commit !== r.commit) {
+    r.commit = commit;
+    addLog(r, step, `reviewing commit ${commit.slice(0, 12)}`);
+  }
   if (provider) {
     r.providers[provider] = pstatus;
     addLog(r, step, `${provider}: ${pstatus}${note ? ` — ${note}` : ""}`);
@@ -661,10 +708,11 @@ export function toolGet(args: any, context: any): any {
   return { review: publicReview(r), page: pageUrl(r) };
 }
 
-/** pr_review_rerun({id, notify?}) — a new review with the same inputs. */
+/** pr_review_rerun({id, mode?, notify?}) — a new review with the same inputs. */
 export function toolRerun(args: any, context: any): any {
   const caller = assertNotReviewSession(context);
   const prior = requireReview(args?.id);
+  const { commit } = rerunInputs(prior, args?.mode);
   const folder = listFolders().find((f) => f.id === prior.folder_id);
   if (!folder) throw new Error("the review's folder no longer exists");
   const notify = args?.notify !== false && !!caller;
@@ -676,6 +724,7 @@ export function toolRerun(args: any, context: any): any {
     prompt: prior.custom_prompt,
     requestedBy: caller || null,
     notify,
+    commit,
   });
   if (r.status === "failed") throw new Error(r.error ?? "the review could not be started");
   return { review: summaryOf(r), page: pageUrl(r) };

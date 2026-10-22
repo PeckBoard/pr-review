@@ -26,6 +26,10 @@ export const STEPS: Step[] = [
 export const PROVIDER_STATUSES: ProviderStatus[] = ["pending", "running", "done", "failed"];
 export const SEVERITIES: Severity[] = ["blocker", "major", "minor", "nit"];
 export const VERDICTS: Verdict[] = ["approve", "approve_with_comments", "request_changes"];
+/// How a re-run picks its commit: `latest` fetches and resolves the branch
+/// again; `current` reviews the exact commit the earlier review used.
+export type RerunMode = "latest" | "current";
+export const RERUN_MODES: RerunMode[] = ["latest", "current"];
 
 /// The three reviewer providers the default orchestration fans out to.
 export const DEFAULT_PROVIDERS = ["claude", "codex", "grok"];
@@ -86,6 +90,13 @@ export interface Review {
   updated_at: string;
   finished_at: string | null;
   error: string | null;
+  /// The commit SHA under review: reported by the review session once it
+  /// resolves the branch (`pr_review_step` `commit`), or fixed at launch when
+  /// `pinned`. Null until known (and on reviews from before 0.4.0).
+  commit?: string | null;
+  /// True when this review must use `commit` exactly instead of fetching and
+  /// resolving the branch's latest commit (a "same commit" re-run).
+  pinned?: boolean;
   /// The session that started this review through `pr_review_start` (null
   /// when started from the page). With `notify`, it gets a message when the
   /// review finishes.

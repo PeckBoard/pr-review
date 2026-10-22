@@ -233,6 +233,35 @@ describe("cancel / delete / rerun / settings", () => {
     expect(store.docs[`session_index/${r.session_id}`]).toBeUndefined();
   });
 
+  it("rerun mode: latest fetches again, current pins the recorded commit", () => {
+    const sha = "a".repeat(40);
+    const r = start();
+    // No commit recorded yet: same-commit is refused, latest still works.
+    expect(http("POST", "rerun", { id: r.id, mode: "current" }).json.error).toMatch(/did not record/);
+    expect(http("POST", "rerun", { id: r.id, mode: "bogus" }).json.error).toMatch(/mode must be/);
+    expect(tool("pr_review_step", { step: "context", commit: "abc" }, r.session_id).error).toMatch(/full 40/);
+    tool("pr_review_step", { step: "context", commit: sha.toUpperCase() }, r.session_id);
+    expect(review(r.id)).toMatchObject({ commit: sha, pinned: false });
+
+    const latest = http("POST", "rerun", { id: r.id, mode: "latest" }).json.review;
+    expect(latest).toMatchObject({ commit: null, pinned: false });
+
+    hostCalls.length = 0;
+    const same = http("POST", "rerun", { id: r.id, mode: "current" }).json.review;
+    expect(same).toMatchObject({ commit: sha, pinned: true });
+    const create = hostCalls.find((c) => c.name === "peckboard_create_session")!.input;
+    expect(create.system_prompt).toContain(`git worktree add --detach pr-review-worktrees/${same.id} ${sha}`);
+    expect(hostCalls.find((c) => c.name === "peckboard_dispatch_capture")!.input.prompt).toContain(sha);
+    // A pinned review refuses a different commit.
+    expect(tool("pr_review_step", { step: "context", commit: "b".repeat(40) }, same.session_id).error).toMatch(
+      /pinned/,
+    );
+
+    // The MCP tool takes the same mode.
+    const viaTool = tool("pr_review_rerun", { id: r.id, mode: "current" }, "caller");
+    expect(viaTool.review).toMatchObject({ commit: sha, pinned: true });
+  });
+
   it("marks a running review failed when its session was deleted", () => {
     const r = start();
     liveSessions.delete(r.session_id);
