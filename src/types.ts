@@ -26,10 +26,19 @@ export const STEPS: Step[] = [
 export const PROVIDER_STATUSES: ProviderStatus[] = ["pending", "running", "done", "failed"];
 export const SEVERITIES: Severity[] = ["blocker", "major", "minor", "nit"];
 export const VERDICTS: Verdict[] = ["approve", "approve_with_comments", "request_changes"];
-/// How a re-run picks its commit: `latest` fetches and resolves the branch
-/// again; `current` reviews the exact commit the earlier review used.
-export type RerunMode = "latest" | "current";
-export const RERUN_MODES: RerunMode[] = ["latest", "current"];
+/// How a re-run picks its commit: `latest` fetches the branch again and, when
+/// an earlier review of it succeeded, reviews only the commits pushed since
+/// (carrying the earlier findings over); `current` reviews the exact commit
+/// the earlier review used; `full` fetches and reviews the whole branch again.
+export type RerunMode = "latest" | "current" | "full";
+export const RERUN_MODES: RerunMode[] = ["latest", "current", "full"];
+
+/// The earlier successful review an incremental re-run builds on.
+export interface Baseline {
+  review_id: string;
+  /// The commit that review covered — only commits after it are reviewed.
+  commit: string;
+}
 
 /// The three reviewer providers the default orchestration fans out to.
 export const DEFAULT_PROVIDERS = ["claude", "codex", "grok"];
@@ -97,6 +106,9 @@ export interface Review {
   /// True when this review must use `commit` exactly instead of fetching and
   /// resolving the branch's latest commit (a "same commit" re-run).
   pinned?: boolean;
+  /// Set on an incremental re-run: only commits after `baseline.commit` are
+  /// reviewed, and the baseline review's findings carry over.
+  baseline?: Baseline | null;
   /// The session that started this review through `pr_review_start` (null
   /// when started from the page). With `notify`, it gets a message when the
   /// review finishes.

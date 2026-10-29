@@ -7,7 +7,13 @@
 //   3. the fixed CONTRACT — tool usage, the review's inputs, the worktree rule.
 //      Not user-editable: the plugin's state machine depends on it.
 
-import { Review } from "./types";
+import { Baseline, Result, Review } from "./types";
+
+/// A diff at most this big gets one reviewer (claude on SMALL_DIFF_MODEL)
+/// instead of the three-provider fan-out.
+export const SMALL_DIFF_LINES = 200;
+export const SMALL_DIFF_FILES = 10;
+export const SMALL_DIFF_MODEL = "claude-opus-5-5";
 
 /// The prompt every reviewer subagent receives verbatim. Sources: Anthropic's
 /// claude-code code-review plugin, anthropics/claude-code-security-review,
@@ -135,17 +141,68 @@ ${target}
 - Call \`pr_review_step\` at the start of every step (\`context\`, \`reviewing\`, \`merging\`, \`verifying\`, \`submitting\`) with a short \`note\`.
 - Call \`pr_review_step\` with \`provider\` + \`provider_status\` whenever a reviewer starts (\`running\`), finishes (\`done\`) or fails (\`failed\`).
 - Finish by calling \`pr_review_submit\` with the full result. If it returns errors, fix exactly those and call it again. The review is not done until a submit succeeds.
-- If the review genuinely cannot be completed (e.g. the branch does not exist, the repository is not a git repo), clean up the worktree, call \`pr_review_step\` with your current step and \`abort_reason\` explaining why, then end your turn. Never abort just because one reviewer failed — submit with it listed in \`reviewers_failed\`.`;
+- If the review genuinely cannot be completed (e.g. the branch does not exist, the repository is not a git repo), clean up the worktree, call \`pr_review_step\` with your current step and \`abort_reason\` explaining why, then end your turn. Never abort just because one reviewer failed — submit with it listed in \`reviewers_failed\`.
+
+### Number of reviewers (fixed — overrides the orchestration where they differ)
+Measure the diff you review with \`git diff --shortstat\`. A SMALL change — at most ${SMALL_DIFF_LINES} changed lines (insertions + deletions) across at most ${SMALL_DIFF_FILES} files — gets ONE reviewer, not three: claude on \`${SMALL_DIFF_MODEL}\` (from \`list_models\`: the claude id containing \`${SMALL_DIFF_MODEL}\`, preferring one without an \`@account\` suffix; if none is listed, the most capable claude model). Do not spawn codex or grok reviewers for it and do not list them in \`reviewers_failed\`. Skip the multi-reviewer merge, but still verify its blockers and majors in code. Say "small change — single reviewer" in the \`reviewing\` step note. Larger changes get the full set of reviewers.`;
 }
 
-/// The session system prompt: global prompt + custom instructions + contract.
-export function buildSystemPrompt(review: Review, globalPrompt: string): string {
+/// Incremental re-run: review only the commits after the baseline and carry
+/// the baseline's findings over, re-checking only those the new commits touch.
+export function incrementalSection(review: Review, baseline: Baseline, prior: Result): string {
+  const b = baseline.commit;
+  const wt = `pr-review-worktrees/${review.id}`;
+  const earlier = JSON.stringify(
+    {
+      summary: prior.summary,
+      why: prior.why,
+      ticket: prior.ticket,
+      verdict: prior.verdict,
+      findings: prior.findings,
+      reviewers_failed: prior.reviewers_failed,
+    },
+    null,
+    1,
+  );
+  return `## Incremental re-run (fixed — overrides the orchestration where they differ)
+
+Review \`${baseline.review_id}\` already reviewed this branch up to commit \`${b}\`. Do NOT review that work again — review only what was pushed since, and carry its findings over. After creating the worktree and reporting its commit (HEAD below):
+
+1. **No new commits** — if HEAD is \`${b}\`: spawn NO reviewers. Call \`pr_review_step\` (step \`submitting\`, note "no new commits since ${b.slice(0, 12)}"), then \`pr_review_submit\` with the earlier result below unchanged (\`dropped\`: []). Clean up and end your turn.
+2. **History rewritten** — if \`git -C ${wt} merge-base --is-ancestor ${b} HEAD\` fails (force-push / rebase; fetch once first if \`${b}\` is missing): ignore this section and run a normal FULL review. Say so in the \`context\` step note.
+3. **Otherwise review only the new commits**:
+   - Context: \`git diff ${b}..HEAD\`, \`git log ${b}..HEAD\`, and \`git diff --name-only ${b}..HEAD\` (the touched files). Use the full-branch diff only for orientation, never as review input.
+   - The reviewer-count rule in the contract is measured on THIS diff.
+   - Give reviewers only this diff, plus the earlier findings' titles/files/lines with the instruction: "these are already reported — do not report them again". The reviewer prompt's "introduced by THIS diff" means these new commits.
+   - Merge the new findings with the earlier ones:
+     - an earlier finding in a file the new commits did NOT touch: keep it verbatim, do not re-verify it;
+     - an earlier finding in a touched file: re-check it at HEAD — fixed or no longer applicable → put it in \`dropped\` with reason "fixed in new commits"; still present → keep it with its line numbers updated to HEAD;
+     - a new finding that duplicates an earlier one is the earlier one.
+   - Verify only the new findings and the re-checked earlier ones.
+   - Submit the FULL merged result: update \`summary\` / \`why\` to cover the whole branch including the new commits, keep the earlier \`ticket\` unless the new commits show a different one, recompute the verdict from the merged findings, at most 5 praise in total. \`reviewers_failed\` lists only reviewers that failed in THIS run.
+
+Earlier result (review \`${baseline.review_id}\`, commit \`${b}\`):
+\`\`\`json
+${earlier}
+\`\`\``;
+}
+
+/// The session system prompt: global prompt + custom instructions + contract
+/// (+ the incremental section; `baselineResult` is the baseline's result).
+export function buildSystemPrompt(
+  review: Review,
+  globalPrompt: string,
+  baselineResult: Result | null = null,
+): string {
   const parts = [globalPrompt.trim()];
   const custom = review.custom_prompt.trim();
   if (custom) {
     parts.push("## Additional instructions for this review\n" + custom);
   }
   parts.push(contractSection(review));
+  if (review.baseline && baselineResult) {
+    parts.push(incrementalSection(review, review.baseline, baselineResult));
+  }
   return parts.join("\n\n");
 }
 
@@ -155,15 +212,19 @@ export function buildSystemPrompt(review: Review, globalPrompt: string): string 
 export function kickoffMessage(review: Review): string {
   const base = review.base ? review.base : "auto-detect: origin/HEAD, main, master";
   const custom = review.custom_prompt.trim();
+  const scope =
+    review.pinned && review.commit
+      ? `Review exactly commit ${review.commit} (a same-commit re-run) — not the branch's newer commits.\n`
+      : review.baseline
+        ? `Fetch first. This is an incremental re-run: review ONLY the commits after ${review.baseline.commit} ` +
+          'and carry the earlier findings over (see "Incremental re-run" in your system prompt).\n'
+        : "Fetch first so you review the branch's latest changes.\n";
   return (
     `Review branch \`${review.branch}\` against base ${base}.\n` +
-    `Review id: ${review.id}.\n\n` +
-    "Follow your system prompt: create the detached worktree, gather context once, run the " +
-    "parallel reviewers, merge, verify, then call pr_review_submit. Report each step with " +
-    `Review branch \`${review.branch}\` against base ${base}.\n` +
-    (review.pinned && review.commit
-      ? `Review exactly commit ${review.commit} (a same-commit re-run) — not the branch's newer commits.\n`
-      : "Fetch first so you review the branch's latest changes.\n") +
+    `Review id: ${review.id}.\n` +
+    scope +
+    "\nFollow your system prompt: create the detached worktree, gather context once, run the " +
+    "reviewer(s), merge, verify, then call pr_review_submit. Report each step with pr_review_step." +
     (custom ? `\n\nAdditional instructions for this review:\n${custom}` : "")
   );
 }

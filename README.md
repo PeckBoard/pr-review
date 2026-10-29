@@ -11,7 +11,8 @@ Reviews** page. The plugin then starts a dedicated agent session named
    `gh` when it is available, and the ticket id;
 3. runs three **independent reviewer subagents in parallel**, one each on the
    top claude, codex and grok model, all with the same reviewer prompt and
-   none seeing another's findings;
+   none seeing another's findings (a small change gets a single claude
+   reviewer instead);
 4. merges their findings, **re-verifies** every blocker/major and every
    single-reviewer finding in the code, and drops the ones it refutes (with a
    reason);
@@ -51,10 +52,12 @@ All JSON, under `/api/plugin-ui/pr-review/`. Errors return `400 {error}`.
 - `GET review?id=<id>` → `{review}`.
 - `POST start {branch, base?, folder_id, model?, prompt?}` → `{review}`.
   The branch and base must be plain ref names. With no model, the plugin picks
-  the most capable claude model (opus preferred).
 - `POST rerun {id, mode?}` → `{review}`: a **new** review with a fresh session and
   the same inputs. The old review keeps its result. `mode` is `latest`
-  (default: fetch and review the branch's newest commit) or `current` (review
+  (default: fetch and review only the commits since the last successful review
+  — see [Re-runs](#re-runs-and-reviewer-count)), `full` (fetch and review the
+  whole branch again) or `current` (review the exact commit the old review
+  recorded in `commit`; fails if it has none).
   the exact commit the old review recorded in `commit`; fails if it has none).
 - `POST cancel {id}` / `POST delete {id}` → `{ok: true}`. Delete leaves the
   session (your transcript) in place.
@@ -94,12 +97,31 @@ A review session itself is refused all of these, so reviews never recurse.
   a pinned review rejects any other SHA). `abort_reason` marks the review
   failed, for reviews that cannot run at all (for example, the branch does not
   exist).
+- `pr_review_submit({result})` validates the result strictly. When it fails,
   it returns every problem with its JSON path, so the agent can fix them and
   resubmit. When it is valid, the review becomes `done` and the counts are
-  computed.
+  computed. Providers still `pending` at submit never ran (a small change, or
+  an incremental re-run with nothing new) and are dropped from `providers`.
 
 Both tools resolve the review from the **calling session's id** (the
 `session_index` collection), so only a review's own session can drive it.
+
+## Re-runs and Reviewer Count
+
+- **Incremental re-runs.** A `latest` re-run builds on the newest `done`
+  review of the same folder, branch and base that recorded its commit
+  (`baseline: {review_id, commit}` on the new review). The session reviews
+  only `git diff <baseline>..HEAD`; reviewers get the earlier findings so they
+  do not report them again. Earlier findings in files the new commits did not
+  touch are kept verbatim; ones in touched files are re-checked (fixed → moved
+  to `dropped`). No new commits → the earlier result is re-submitted with no
+  reviewers spawned. Rewritten history (baseline not an ancestor of HEAD) →
+  a full review. Triage carries over to findings with the same kind, file and
+  title. `full` skips all of this.
+- **Small changes.** A reviewed diff of at most 200 changed lines across at
+  most 10 files (`SMALL_DIFF_*` in `src/prompt.ts`) gets one reviewer — claude
+  on `claude-opus-5-5` — instead of the claude/codex/grok fan-out. Both rules
+  live in the fixed contract, so they hold under a custom global prompt.
 ## Watchdog
 
 `session.agent.ended` fires when a review session's run ends. If no result

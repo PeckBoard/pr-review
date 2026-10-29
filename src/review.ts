@@ -35,9 +35,11 @@ import {
   ProviderStatus,
   RERUN_MODES,
   RerunMode,
+  Result,
   Review,
   STEPS,
   Step,
+  TriageEntry,
 } from "./types";
 import { countFindings, emptyCounts, validateResult } from "./validate";
 import { errMsg } from "./verdict";
@@ -284,11 +286,16 @@ interface StartInput {
   /// Review exactly this commit (a "same commit" re-run); omit to fetch and
   /// review the branch's latest commit.
   commit?: string | null;
+  /// An earlier successful review to build on (incremental "latest" re-run):
+  /// only commits after its commit are reviewed. Ignored when pinned.
+  baseline?: Review | null;
 }
 
 function launch(input: StartInput): Review {
   const ts = now();
   const fromTool = !!input.requestedBy;
+  const baseline =
+    !input.commit && input.baseline?.result && input.baseline.commit ? input.baseline : null;
   const review: Review = {
     id: newId(),
     branch: input.branch,
@@ -314,17 +321,21 @@ function launch(input: StartInput): Review {
     nudges: 0,
     commit: input.commit ?? null,
     pinned: !!input.commit,
+    baseline: baseline ? { review_id: baseline.id, commit: baseline.commit as string } : null,
   };
   addLog(
     review,
     "starting",
     (fromTool ? "review queued by a session" : "review queued") +
-      (input.commit ? ` — pinned to commit ${input.commit.slice(0, 12)}` : ""),
+      (input.commit ? ` — pinned to commit ${input.commit.slice(0, 12)}` : "") +
+      (baseline
+        ? ` — incremental: only commits after ${(baseline.commit as string).slice(0, 12)} (review ${baseline.id})`
+        : ""),
   );
   saveReview(review);
 
   const name = `PR review: ${input.branch}`;
-  const systemPrompt = buildSystemPrompt(review, globalPrompt());
+  const systemPrompt = buildSystemPrompt(review, globalPrompt(), baseline?.result ?? null);
   let sessionId: string;
   try {
     // A tool call's create_session is pinned to the caller's folder; the
@@ -387,25 +398,46 @@ export function startReview(body: any): any {
   return { review: publicReview(launch({ branch, base, folder, model, prompt })) };
 }
 
-/// The launch inputs for a re-run of `prior`. `latest` (default) fetches and
-/// resolves the branch again; `current` pins the commit `prior` reviewed.
-function rerunInputs(prior: Review, modeArg: unknown): { commit: string | null } {
+/// The newest successful review of the same folder / branch / base that
+/// recorded its commit — what an incremental re-run builds on. `prior` itself
+/// counts; a failed or cancelled `prior` falls back to an earlier success.
+export function findBaseline(prior: Review): Review | null {
+  const hits = allReviews().filter(
+    (r) =>
+      r.status === "done" &&
+      !!r.result &&
+      !!r.commit &&
+      r.folder_id === prior.folder_id &&
+      r.branch === prior.branch &&
+      (r.base ?? null) === (prior.base ?? null),
+  );
+  if (hits.length === 0) return null;
+  const at = (r: Review) => r.finished_at ?? r.created_at;
+  return hits.reduce((best, r) => (at(r) > at(best) ? r : best));
+}
+
+/// The launch inputs for a re-run of `prior`. `latest` (default) fetches the
+/// branch again and reviews only what was pushed since the last successful
+/// review (see findBaseline); `full` fetches and reviews everything again;
+/// `current` pins the commit `prior` reviewed.
+function rerunInputs(prior: Review, modeArg: unknown): { commit: string | null; baseline: Review | null } {
   const mode = (str(modeArg) || "latest") as RerunMode;
   if (!RERUN_MODES.includes(mode)) throw new Error(`mode must be one of ${RERUN_MODES.join(", ")}`);
-  if (mode === "latest") return { commit: null };
+  if (mode === "full") return { commit: null, baseline: null };
+  if (mode === "latest") return { commit: null, baseline: findBaseline(prior) };
   if (!prior.commit) {
     throw new Error(
       "this review did not record which commit it reviewed — re-run it on the latest changes instead",
     );
   }
-  return { commit: prior.commit };
+  return { commit: prior.commit, baseline: null };
 }
 
 /// POST rerun {id, mode?} — a NEW review (fresh session) with the same
 /// inputs; the old one keeps its result.
 export function rerunReview(body: any): any {
   const prior = requireReview(body?.id);
-  const { commit } = rerunInputs(prior, body?.mode);
+  const { commit, baseline } = rerunInputs(prior, body?.mode);
   const folder = listFolders().find((f) => f.id === prior.folder_id) ?? {
     id: prior.folder_id,
     name: prior.folder_name,
@@ -420,6 +452,7 @@ export function rerunReview(body: any): any {
         model: prior.model,
         prompt: prior.custom_prompt,
         commit,
+        baseline,
       }),
     ),
   };
@@ -527,6 +560,26 @@ export function toolStep(args: any, context: any): any {
   return { ok: true, review_id: r.id, step };
 }
 
+/// An incremental re-run carries the baseline's findings over; carry the
+/// user's triage of them too — matched by kind + file + title, since the
+/// merged result renumbers the findings.
+export function carriedTriage(baselineId: string, result: Result): Record<string, TriageEntry> {
+  const prior = loadReview(baselineId);
+  const out: Record<string, TriageEntry> = {};
+  if (!prior?.result || !prior.triage) return out;
+  const key = (f: Result["findings"][number]) => `${f.kind}\u0000${f.file ?? ""}\u0000${f.title}`;
+  const byKey = new Map<string, TriageEntry>();
+  prior.result.findings.forEach((f, i) => {
+    const t = prior.triage?.[String(i)];
+    if (t && !byKey.has(key(f))) byKey.set(key(f), t);
+  });
+  result.findings.forEach((f, i) => {
+    const t = byKey.get(key(f));
+    if (t) out[String(i)] = { ...t };
+  });
+  return out;
+}
+
 /** pr_review_submit({result}) */
 export function toolSubmit(args: any, context: any): any {
   const r = reviewForCaller(context);
@@ -542,9 +595,17 @@ export function toolSubmit(args: any, context: any): any {
   r.counts = countFindings(result.findings);
   const failed = new Set(result.reviewers_failed.map((p) => p.toLowerCase()));
   for (const p of failed) r.providers[p] = "failed";
+  // A provider still `pending` never ran: a small change gets one reviewer,
+  // and an incremental re-run with no new commits gets none. Keep it only
+  // when its findings show it did run unreported (carried-over findings on
+  // an incremental re-run name earlier reviewers, so they do not count).
+  const raised = new Set(r.baseline ? [] : result.findings.flatMap((f) => f.reviewers.map((x) => x.toLowerCase())));
   for (const [p, s] of Object.entries(r.providers)) {
-    if (!failed.has(p) && (s === "pending" || s === "running")) r.providers[p] = "done";
+    if (failed.has(p)) continue;
+    if (s === "running" || (s === "pending" && raised.has(p))) r.providers[p] = "done";
+    else if (s === "pending") delete r.providers[p];
   }
+  if (r.baseline) r.triage = carriedTriage(r.baseline.review_id, result);
   finish(r, "done", null);
   addLog(
     r,
@@ -712,7 +773,7 @@ export function toolGet(args: any, context: any): any {
 export function toolRerun(args: any, context: any): any {
   const caller = assertNotReviewSession(context);
   const prior = requireReview(args?.id);
-  const { commit } = rerunInputs(prior, args?.mode);
+  const { commit, baseline } = rerunInputs(prior, args?.mode);
   const folder = listFolders().find((f) => f.id === prior.folder_id);
   if (!folder) throw new Error("the review's folder no longer exists");
   const notify = args?.notify !== false && !!caller;
@@ -725,6 +786,7 @@ export function toolRerun(args: any, context: any): any {
     requestedBy: caller || null,
     notify,
     commit,
+    baseline,
   });
   if (r.status === "failed") throw new Error(r.error ?? "the review could not be started");
   return { review: summaryOf(r), page: pageUrl(r) };

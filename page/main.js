@@ -611,9 +611,11 @@ function miniSteps(r) {
 
 // ── actions ──────────────────────────────────────────────────────────────────
 
-// Re-run asks which commit to review: the branch's latest changes (fetched
-// again) or the exact commit this review used. "Same commit" needs a recorded
-// commit — reviews from before 0.4.0, or ones that failed early, have none.
+// Re-run asks what to review: only the commits pushed since the last
+// successful review (the server finds it; earlier findings carry over), the
+// whole branch again, or the exact commit this review used. "Same commit"
+// needs a recorded commit — reviews from before 0.4.0, or ones that failed
+// early, have none.
 function rerunModeDialog(r) {
   return new Promise((resolve) => {
     let mode = "latest";
@@ -623,8 +625,16 @@ function rerunModeDialog(r) {
       {
         id: "latest",
         icon: "rerun",
-        label: "Pull latest changes",
-        hint: "Fetch the branch and review its newest commit.",
+        label: "New commits only",
+        hint:
+          "Fetch the branch and review only what was pushed since the last successful review; " +
+          "its findings carry over. Reviews everything if there is none.",
+      },
+      {
+        id: "full",
+        icon: "rerun",
+        label: "Full review",
+        hint: "Fetch the branch and review the whole change again from scratch.",
       },
       {
         id: "current",
@@ -639,7 +649,7 @@ function rerunModeDialog(r) {
     const group = h("div", {
       class: "decision-group rerun-mode-group",
       role: "radiogroup",
-      "aria-label": "Which commit to review",
+      "aria-label": "What to review",
       testid: "pr-review-rerun-mode",
     });
     for (const o of opts) {
@@ -699,7 +709,16 @@ async function doRerun(r) {
   if (!mode) return;
   try {
     const res = await postJSON(P + "/rerun", { id: r.id, mode });
-    toast(mode === "current" ? "Re-run started on the same commit" : "Re-run started on the latest changes");
+    const base = res && res.review && res.review.baseline;
+    toast(
+      mode === "current"
+        ? "Re-run started on the same commit"
+        : mode === "full"
+          ? "Full re-run started on the latest changes"
+          : base
+            ? "Re-run started on commits since " + base.commit.slice(0, 7)
+            : "Re-run started on the latest changes",
+    );
     const id = res && res.review && res.review.id;
     if (S.route.view === "review" && id && id !== S.route.id) go(reviewHash(id));
     else refresh();
@@ -1926,6 +1945,21 @@ function detailHeader(r) {
                   title: (r.pinned ? "Pinned commit " : "Reviewed commit ") + r.commit,
                 },
                 r.commit.slice(0, 7) + (r.pinned ? " (pinned)" : ""),
+              )
+            : null,
+          r.baseline
+            ? h(
+                "a",
+                {
+                  class: "mono",
+                  href: reviewHash(r.baseline.review_id),
+                  testid: "pr-review-baseline",
+                  title:
+                    "Incremental re-run: only commits after " +
+                    r.baseline.commit +
+                    " were reviewed; findings carried over from the earlier review",
+                },
+                "since " + r.baseline.commit.slice(0, 7),
               )
             : null,
           created !== null ? h("span", null, icon("clock"), "Started ", relEl(created)) : null,

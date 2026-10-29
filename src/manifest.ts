@@ -13,7 +13,8 @@ const DESCRIPTION =
   "PR Review: review a git branch like a pull request. Pick a folder and a branch; a " +
   "dedicated agent session gathers the branch's context once (diff, commits, PR body, " +
   "ticket), fans the review out to independent claude, codex and grok reviewer subagents " +
-  "in parallel, merges their findings, re-verifies every serious or single-reviewer " +
+  "in parallel (a small change gets a single Claude Opus reviewer), merges their findings, " +
+  "re-verifies every serious or single-reviewer " +
   "finding in the code, and submits one structured result: summary, why, verdict, and " +
   "ranked findings with file/line, suggested fix, which reviewers raised each, and " +
   "confidence. The review runs in a detached git worktree — your checkout is never " +
@@ -259,8 +260,10 @@ export function manifestJson(): string {
         name: "pr_review_rerun",
         description:
           "Start a new review with the same branch, folder, model and prompt as an earlier one. " +
-          "mode 'latest' (default) fetches and reviews the branch's newest commit; mode 'current' " +
-          "reviews the exact commit the earlier review used (fails if it did not record one).",
+          "mode 'latest' (default) fetches the branch and reviews only the commits pushed since " +
+          "the last successful review of it, carrying its findings and triage over (a full review " +
+          "when there is none or history was rewritten); 'full' reviews the whole branch again; " +
+          "'current' reviews the exact commit the earlier review used (fails if it did not record one).",
         input_schema: {
           type: "object",
           properties: {
@@ -269,7 +272,8 @@ export function manifestJson(): string {
               type: "string",
               enum: RERUN_MODES,
               description:
-                "latest = pull the branch's latest changes (default); current = same commit as before.",
+                "latest = only new commits since the last successful review (default); full = whole " +
+                "branch again; current = same commit as before.",
             },
             notify: { type: "boolean", description: "Message this session when it finishes (default true)." },
           },

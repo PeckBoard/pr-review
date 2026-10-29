@@ -262,6 +262,45 @@ describe("cancel / delete / rerun / settings", () => {
     expect(viaTool.review).toMatchObject({ commit: sha, pinned: true });
   });
 
+  it("latest rerun is incremental: only commits since the last successful review, findings + triage carried", () => {
+    const sha = "c".repeat(40);
+    const r = start();
+    // A rerun before any success has nothing to build on.
+    expect(http("POST", "rerun", { id: r.id }).json.review.baseline).toBeNull();
+    tool("pr_review_step", { step: "context", commit: sha }, r.session_id);
+    tool("pr_review_submit", { result: validResult() }, r.session_id);
+    expect(http("POST", "triage", { id: r.id, index: 0, ignored: true }).status).toBe(200);
+
+    hostCalls.length = 0;
+    const inc = http("POST", "rerun", { id: r.id }).json.review;
+    expect(inc.baseline).toEqual({ review_id: r.id, commit: sha });
+    const prompt = hostCalls.find((c) => c.name === "peckboard_create_session")!.input.system_prompt;
+    expect(prompt).toContain("## Incremental re-run");
+    expect(prompt).toContain(`git diff ${sha}..HEAD`);
+    expect(prompt).toContain("Retry loop never ends"); // earlier findings ride along
+    expect(hostCalls.find((c) => c.name === "peckboard_dispatch_capture")!.input.prompt).toContain(
+      `ONLY the commits after ${sha}`,
+    );
+
+    // Nothing new pushed: the earlier result comes back, no reviewer ran.
+    tool("pr_review_step", { step: "context", commit: sha }, inc.session_id);
+    tool("pr_review_submit", { result: validResult() }, inc.session_id);
+    const done = review(inc.id);
+    expect(done.providers).toEqual({});
+    expect(done.triage).toEqual({ "0": { ignored: true, comment: null } });
+
+    // A failed later review still re-runs from the newest success.
+    const failed = http("POST", "rerun", { id: inc.id }).json.review;
+    http("POST", "cancel", { id: failed.id });
+    expect(http("POST", "rerun", { id: failed.id }).json.review.baseline.review_id).toBe(inc.id);
+
+    // full ignores the baseline.
+    hostCalls.length = 0;
+    expect(http("POST", "rerun", { id: r.id, mode: "full" }).json.review.baseline).toBeNull();
+    expect(hostCalls.find((c) => c.name === "peckboard_create_session")!.input.system_prompt).not.toContain(
+      "Incremental re-run",
+    );
+  });
   it("marks a running review failed when its session was deleted", () => {
     const r = start();
     liveSessions.delete(r.session_id);

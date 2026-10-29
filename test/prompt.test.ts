@@ -67,4 +67,17 @@ describe("prompt assembly", () => {
     expect(k).toContain("develop");
     expect(k).toContain("r1");
   });
+
+  it("contract sends a small change to a single opus reviewer, even under a custom global prompt", () => {
+    const p = buildSystemPrompt(review(), "Custom global.");
+    expect(p).toContain("### Number of reviewers");
+    expect(p).toContain("claude-opus-5-5");
+    expect(p).toContain("git diff --shortstat");
+  });
+
+  it("kickoff has no duplicated lines and names the scope", () => {
+    const k = kickoffMessage(review());
+    expect(k.split("Review branch").length).toBe(2);
+    expect(k).toContain("Fetch first");
+  });
 });
