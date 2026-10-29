@@ -28,7 +28,7 @@ import {
   storeList,
   storePut,
 } from "./host";
-import { buildSystemPrompt, DEFAULT_GLOBAL_PROMPT, kickoffMessage, nudgeMessage } from "./prompt";
+import { buildSystemPrompt, DEFAULT_GLOBAL_PROMPT, kickoffMessage, nudgeMessage, reviewerBrief } from "./prompt";
 import {
   DEFAULT_PROVIDERS,
   PROVIDER_STATUSES,
@@ -580,10 +580,56 @@ export function carriedTriage(baselineId: string, result: Result): Record<string
   return out;
 }
 
+/// Expand the token-saving submit forms of an incremental re-run into a full
+/// result, so the agent never retypes earlier findings: `{unchanged: true}`
+/// re-uses the baseline's result (HEAD must be the baseline commit);
+/// `result.carried` adds the baseline findings at those indices verbatim.
+export function expandSubmit(r: Review, args: any): { input: unknown } | { error: string } {
+  let raw = args?.result;
+  if (typeof raw === "string") {
+    try {
+      raw = JSON.parse(raw);
+    } catch (_e) {
+      return { input: raw }; // validateResult reports it
+    }
+  }
+  const unchanged = args?.unchanged === true;
+  const carried = raw && typeof raw === "object" && !Array.isArray(raw) ? raw.carried : undefined;
+  if (!unchanged && carried === undefined) return { input: raw };
+  const base = r.baseline ? loadReview(r.baseline.review_id) : null;
+  if (!r.baseline || !base?.result) {
+    return {
+      error:
+        "`unchanged` / `result.carried` only work on an incremental re-run whose earlier review still " +
+        "exists — submit the full result instead",
+    };
+  }
+  if (unchanged) {
+    if (r.commit !== r.baseline.commit) {
+      return {
+        error:
+          `\`unchanged\` needs HEAD to be the earlier commit ${r.baseline.commit} (reported commit: ` +
+          `${r.commit ?? "none"}) — report it with pr_review_step, or review the new commits`,
+      };
+    }
+    return { input: { ...base.result, dropped: [] } };
+  }
+  const n = base.result.findings.length;
+  if (!Array.isArray(carried) || !carried.every((i) => Number.isInteger(i) && i >= 0 && i < n)) {
+    return { error: `result.carried: must be an array of earlier finding indices (0..${n - 1})` };
+  }
+  const { carried: _c, ...rest } = raw;
+  const kept = [...new Set(carried as number[])].map((i) => base.result!.findings[i]);
+  const fresh = Array.isArray(rest.findings) ? rest.findings : [];
+  return { input: { ...rest, findings: [...kept, ...fresh] } };
+}
+
 /** pr_review_submit({result}) */
 export function toolSubmit(args: any, context: any): any {
   const r = reviewForCaller(context);
-  const v = validateResult(args?.result);
+  const expanded = expandSubmit(r, args);
+  if ("error" in expanded) return { error: expanded.error };
+  const v = validateResult(expanded.input);
   if (!v.ok) {
     return {
       error:
@@ -619,6 +665,19 @@ export function toolSubmit(args: any, context: any): any {
     counts: r.counts,
     message: "review saved — remove the worktree if you have not, then end your turn",
   };
+}
+
+/** pr_review_reviewer_brief({review_id}) — the full reviewer instructions for
+ * a running review. Any session may call it: reviewers are subagents of the
+ * review session, not review sessions themselves. Serving it here means the
+ * orchestrator spawns each reviewer with one line instead of writing the
+ * reviewer prompt, schema and paths out per spawn. */
+export function toolReviewerBrief(args: any, _context: any): any {
+  const r = loadReview(str(args?.review_id) || str(args?.id));
+  if (!r) throw new Error("review not found — check the review_id your orchestrator gave you");
+  if (!isActive(r)) throw new Error(`review ${r.id} is ${r.status} — stop and end your turn`);
+  const base = r.baseline ? loadReview(r.baseline.review_id) : null;
+  return { brief: reviewerBrief(r, globalPrompt(), base?.result ?? null) };
 }
 
 // ── Watchdog (session.agent.ended) ──────────────────────────────────────────

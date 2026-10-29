@@ -179,12 +179,37 @@ export function manifestJson(): string {
                   },
                   description: "Reviewer findings you refuted in code, with the reason.",
                 },
+                carried: {
+                  type: "array",
+                  items: { type: "integer", minimum: 0 },
+                  description:
+                    "Incremental re-run only: indices of earlier findings to keep verbatim. The plugin " +
+                    "adds them to `findings` — never retype them.",
+                },
               },
               required: ["summary", "why", "ticket", "verdict", "findings", "reviewers_failed", "dropped"],
               additionalProperties: false,
             },
+            unchanged: {
+              type: "boolean",
+              description:
+                "Incremental re-run with no new commits: pass true INSTEAD of result to re-use the " +
+                "earlier review's result.",
+            },
           },
-          required: ["result"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "pr_review_reviewer_brief",
+        description:
+          "For a PR reviewer subagent: returns your complete reviewer instructions — the review " +
+          "prompt, the worktree and context-file paths, the scope (full or only new commits), and " +
+          "the exact JSON your final message must be. Call it first and follow it.",
+        input_schema: {
+          type: "object",
+          properties: { review_id: { type: "string", description: "The review id you were given." } },
+          required: ["review_id"],
           additionalProperties: false,
         },
       },

@@ -63,44 +63,33 @@ Do NOT report: style a linter or formatter would catch; subjective preferences; 
 - Praise: 1-3 specific things done well (a tricky edge case handled, a good test). Never generic "looks good".
 - Tone: direct and neutral, about the code, never the author. No hedging filler.`;
 
+/// The JSON every reviewer's final message must be. Compact on purpose — it
+/// rides in every reviewer brief.
+export const REVIEWER_SCHEMA = `### Reviewer JSON schema (each reviewer's final message must be exactly this JSON, nothing else)
+\`\`\`json
+{"summary": "2-5 sentences", "why": "motivation, or \\"unclear\\"", "ticket": {"id": "ABC-123", "url": null, "title": null},
+ "findings": [
+  {"kind": "change", "severity": "blocker | major | minor | nit", "file": "path/from/repo/root.ts", "line": 42, "end_line": 44, "title": "one line", "detail": "what, trigger, consequence", "suggestion": "specific fix or null", "confidence": 0.85},
+  {"kind": "praise", "severity": null, "file": null, "line": null, "end_line": null, "title": "…", "detail": "…", "suggestion": null, "confidence": 0.9}
+ ]}
+\`\`\`
+(\`ticket\` is null when none was found.)`;
+
 /// How the review session runs the review: one context pass, three parallel
 /// independent reviewers, a merge, a verification pass, one submit.
 export const ORCHESTRATION = `## How to run this review
 
 You orchestrate a multi-model review of one branch and submit ONE merged result.
 
-1. Gather context ONCE (step \`context\`), from inside the worktree (see the contract): the merge base, \`git diff <base>...<branch>\`, \`git log <base>..<branch>\`, the branch name, \`gh pr view <branch> --json title,body,url\` when \`gh\` is installed and authenticated (skip silently otherwise), and the ticket id from the branch name / commits / PR body. Write the diff and this context to files under \`pr-review-worktrees/<review-id>.context/\` so every reviewer reads the same input.
+1. Gather context ONCE (step \`context\`), from inside the worktree (see the contract): the merge base, \`git diff <base>...<branch>\`, \`git log <base>..<branch>\`, the branch name, \`gh pr view <branch> --json title,body,url\` when \`gh\` is installed and authenticated (skip silently otherwise), and the ticket id from the branch name / commits / PR body. Write them straight to files with shell redirection (do not read the diff back into your own context just to copy it): the diff to \`pr-review-worktrees/<review-id>.context/diff.patch\`, everything else to \`pr-review-worktrees/<review-id>.context/context.md\`, so every reviewer reads the same input.
 2. Pick reviewers (step \`reviewing\`): call \`list_models\` and choose the most capable model of each provider — one claude, one codex, one grok. A provider with no model is skipped: record it in \`reviewers_failed\` and report it with \`pr_review_step\` (provider_status \`failed\`).
-3. Spawn the reviewers IN PARALLEL with the Peckboard \`spawn_subagent\` tool — one per provider, each on its chosen model, each READ-ONLY (they must not edit files, commit, or run mutating commands). Give each the identical prompt: the "Reviewer prompt" section below verbatim, the gathered context (or paths to it), the worktree path, and the reviewer JSON schema below. Do not share one reviewer's findings with another. Report each with \`pr_review_step\` (provider_status \`running\`).
+3. Spawn the reviewers IN PARALLEL with the Peckboard \`spawn_subagent\` tool — one per provider, each on its chosen model, each READ-ONLY (they must not edit files, commit, or run mutating commands). Keep each spawn prompt SHORT: tell the reviewer to call \`pr_review_reviewer_brief\` with the review id and follow it — the brief carries the reviewer prompt below, the JSON schema, the worktree and the context-file paths, so never paste them (or the diff) into the spawn prompt. Do not share one reviewer's findings with another. Report each with \`pr_review_step\` (provider_status \`running\`).
 4. Wait: subagent results are posted back to you automatically — end your turn while they run; do not poll. Mark each provider \`done\` or \`failed\` as results arrive. Retry a failed reviewer ONCE; if it fails again, record it in \`reviewers_failed\`.
 5. Merge (step \`merging\`): findings on the same file, lines within ±5, with the same root cause are ONE finding; \`reviewers\` lists every provider that raised it. On severity disagreement take the highest only if you confirm it in code, else the median.
 6. Verify (step \`verifying\`): re-check in the code yourself every blocker and major, and every finding raised by a single reviewer. Drop refuted ones into \`dropped\` with the reason. Lower any you cannot confirm to confidence ≤ 0.6. Add +0.1 confidence for consensus (raised by 2+ reviewers), capped at 1.
 7. Assemble (step \`submitting\`): keep at most 5 praise items; sort blocker > major > minor > nit, consensus findings first within a severity, then praise. Choose the verdict: \`request_changes\` if any blocker or major stands, \`approve_with_comments\` if only minor/nit, else \`approve\`. Write the merged \`summary\` and \`why\`. Call \`pr_review_submit\`.
 
-### Reviewer JSON schema (each reviewer's final message must be exactly this JSON)
-\`\`\`json
-{
-  "summary": "2-5 sentences",
-  "why": "motivation, or \\"unclear\\"",
-  "ticket": { "id": "ABC-123", "url": null, "title": null },
-  "findings": [
-    {
-      "kind": "change",
-      "severity": "blocker | major | minor | nit",
-      "file": "path/from/repo/root.ts",
-      "line": 42,
-      "end_line": 44,
-      "title": "one line",
-      "detail": "what, trigger, consequence",
-      "suggestion": "specific fix or null",
-      "confidence": 0.85
-    },
-    { "kind": "praise", "severity": null, "file": null, "line": null, "end_line": null, "title": "…", "detail": "…", "suggestion": null, "confidence": 0.9 }
-  ]
-}
-\`\`\`
-(\`ticket\` is null when none was found.)
-
+${REVIEWER_SCHEMA}
 ## Reviewer prompt (give this to every reviewer verbatim)
 
 `;
@@ -144,7 +133,38 @@ ${target}
 - If the review genuinely cannot be completed (e.g. the branch does not exist, the repository is not a git repo), clean up the worktree, call \`pr_review_step\` with your current step and \`abort_reason\` explaining why, then end your turn. Never abort just because one reviewer failed — submit with it listed in \`reviewers_failed\`.
 
 ### Number of reviewers (fixed — overrides the orchestration where they differ)
-Measure the diff you review with \`git diff --shortstat\`. A SMALL change — at most ${SMALL_DIFF_LINES} changed lines (insertions + deletions) across at most ${SMALL_DIFF_FILES} files — gets ONE reviewer, not three: claude on \`${SMALL_DIFF_MODEL}\` (from \`list_models\`: the claude id containing \`${SMALL_DIFF_MODEL}\`, preferring one without an \`@account\` suffix; if none is listed, the most capable claude model). Do not spawn codex or grok reviewers for it and do not list them in \`reviewers_failed\`. Skip the multi-reviewer merge, but still verify its blockers and majors in code. Say "small change — single reviewer" in the \`reviewing\` step note. Larger changes get the full set of reviewers.`;
+${reviewerCountSection(review)}
+
+### Keep token use low (fixed)
+- Context goes to \`diff.patch\` / \`context.md\` in the context directory by shell redirection, ONCE. Never paste the diff, file contents, the reviewer prompt or the schema into a spawn prompt or a message.
+- Spawn each reviewer with a short prompt only: "You are a read-only PR reviewer. Call the \`pr_review_reviewer_brief\` tool with review_id \`${review.id}\` and follow it exactly; your final message must be the JSON it specifies." If a reviewer cannot call that tool, call it yourself once, write its text to \`pr-review-worktrees/${review.id}.context/brief.md\`, and respawn that reviewer with "Read <absolute path to brief.md> and follow it exactly."
+- When verifying, read only the lines around a finding (\`sed -n\` / a line window), not whole files; do not re-read what a reviewer already quoted unless you are checking it.`;
+}
+
+/// How many reviewers, by diff size. The user's call: a small change gets one
+/// claude reviewer on SMALL_DIFF_MODEL — and when the session itself runs
+/// that model it reviews in-session, skipping a subagent that would re-read
+/// the same code.
+function reviewerCountSection(review: Review): string {
+  const self = review.model.includes(SMALL_DIFF_MODEL);
+  const single = self
+    ? `you run on \`${SMALL_DIFF_MODEL}\` yourself, so review it IN THIS SESSION — spawn no subagent. Call \`pr_review_reviewer_brief\` and act as that reviewer, report provider \`claude\` \`running\` then \`done\`, and submit with \`reviewers: ["claude"]\`. Your own in-code checks are the verification: skip the merge and the separate verify pass.`
+    : `spawn ONE claude reviewer on \`${SMALL_DIFF_MODEL}\` (from \`list_models\`: the claude id containing \`${SMALL_DIFF_MODEL}\`, preferring one without an \`@account\` suffix; if none is listed, the most capable claude model). Skip the multi-reviewer merge, but still verify its blockers and majors in code.`;
+  return `### Number of reviewers (fixed — overrides the orchestration where they differ)
+Measure the diff you review with \`git diff --shortstat\`. A SMALL change — at most ${SMALL_DIFF_LINES} changed lines (insertions + deletions) across at most ${SMALL_DIFF_FILES} files — gets ONE reviewer, not three: ${single} Do not use codex or grok for it and do not list them in \`reviewers_failed\`. Say "small change — single reviewer" in the \`reviewing\` step note. Larger changes get the full set of reviewers.`;
+}
+
+/// The baseline's findings, compact and indexed (the index is what
+/// `result.carried` refers to). Suggestions, reviewers and confidence stay
+/// server-side — the plugin copies carried findings verbatim.
+export function earlierFindings(prior: Result): string {
+  return prior.findings
+    .map((f, i) => {
+      const at = f.file ? ` ${f.file}${f.line ? `:${f.line}${f.end_line ? `-${f.end_line}` : ""}` : ""}` : "";
+      const sev = f.kind === "praise" ? "praise" : f.severity;
+      return `${i}. [${sev}]${at} — ${f.title}: ${f.detail.replace(/\s+/g, " ").slice(0, 400)}`;
+    })
+    .join("\n");
 }
 
 /// Incremental re-run: review only the commits after the baseline and carry
@@ -152,39 +172,67 @@ Measure the diff you review with \`git diff --shortstat\`. A SMALL change — at
 export function incrementalSection(review: Review, baseline: Baseline, prior: Result): string {
   const b = baseline.commit;
   const wt = `pr-review-worktrees/${review.id}`;
-  const earlier = JSON.stringify(
-    {
-      summary: prior.summary,
-      why: prior.why,
-      ticket: prior.ticket,
-      verdict: prior.verdict,
-      findings: prior.findings,
-      reviewers_failed: prior.reviewers_failed,
-    },
-    null,
-    1,
-  );
+  const ticket = prior.ticket ? `${prior.ticket.id}${prior.ticket.url ? ` (${prior.ticket.url})` : ""}` : "none";
   return `## Incremental re-run (fixed — overrides the orchestration where they differ)
 
 Review \`${baseline.review_id}\` already reviewed this branch up to commit \`${b}\`. Do NOT review that work again — review only what was pushed since, and carry its findings over. After creating the worktree and reporting its commit (HEAD below):
 
-1. **No new commits** — if HEAD is \`${b}\`: spawn NO reviewers. Call \`pr_review_step\` (step \`submitting\`, note "no new commits since ${b.slice(0, 12)}"), then \`pr_review_submit\` with the earlier result below unchanged (\`dropped\`: []). Clean up and end your turn.
+1. **No new commits** — if HEAD is \`${b}\`: spawn NO reviewers and gather no context. Call \`pr_review_submit\` with \`{"unchanged": true}\` (the plugin re-uses the earlier result). Clean up and end your turn.
 2. **History rewritten** — if \`git -C ${wt} merge-base --is-ancestor ${b} HEAD\` fails (force-push / rebase; fetch once first if \`${b}\` is missing): ignore this section and run a normal FULL review. Say so in the \`context\` step note.
 3. **Otherwise review only the new commits**:
-   - Context: \`git diff ${b}..HEAD\`, \`git log ${b}..HEAD\`, and \`git diff --name-only ${b}..HEAD\` (the touched files). Use the full-branch diff only for orientation, never as review input.
-   - The reviewer-count rule in the contract is measured on THIS diff.
-   - Give reviewers only this diff, plus the earlier findings' titles/files/lines with the instruction: "these are already reported — do not report them again". The reviewer prompt's "introduced by THIS diff" means these new commits.
-   - Merge the new findings with the earlier ones:
-     - an earlier finding in a file the new commits did NOT touch: keep it verbatim, do not re-verify it;
-     - an earlier finding in a touched file: re-check it at HEAD — fixed or no longer applicable → put it in \`dropped\` with reason "fixed in new commits"; still present → keep it with its line numbers updated to HEAD;
+   - Context: \`diff.patch\` = \`git diff ${b}..HEAD\`; \`context.md\` = \`git log ${b}..HEAD\` plus \`git diff --name-only ${b}..HEAD\` (the touched files). Never use the full-branch diff as review input.
+   - The reviewer-count rule in the contract is measured on THIS diff. The reviewer brief already tells reviewers it is incremental and lists the earlier findings.
+   - Merge the new findings with the earlier ones below:
+     - an earlier finding in a file the new commits did NOT touch: carry it — list its index in \`result.carried\`; do not re-verify or retype it;
+     - an earlier finding in a touched file: re-check it at HEAD — fixed or no longer applicable → \`dropped\` with reason "fixed in new commits"; still present at the same lines → carry it; still present but moved → put it in \`findings\` with updated line numbers (and do not carry it);
      - a new finding that duplicates an earlier one is the earlier one.
    - Verify only the new findings and the re-checked earlier ones.
-   - Submit the FULL merged result: update \`summary\` / \`why\` to cover the whole branch including the new commits, keep the earlier \`ticket\` unless the new commits show a different one, recompute the verdict from the merged findings, at most 5 praise in total. \`reviewers_failed\` lists only reviewers that failed in THIS run.
+   - Submit: \`findings\` holds ONLY new and moved findings; \`carried\` the kept earlier indices (the plugin adds those verbatim and sorts). Update \`summary\` / \`why\` to cover the whole branch, keep the earlier ticket unless the new commits show a different one, choose the verdict from the merged set, at most 5 praise in total. \`reviewers_failed\` lists only reviewers that failed in THIS run.
 
-Earlier result (review \`${baseline.review_id}\`, commit \`${b}\`):
-\`\`\`json
-${earlier}
-\`\`\``;
+Earlier result (review \`${baseline.review_id}\`, commit \`${b}\`) — verdict ${prior.verdict}, ticket ${ticket}.
+Summary: ${prior.summary}
+Why: ${prior.why}
+Findings (index. [severity] file:line — title: detail):
+${earlierFindings(prior) || "(none)"}`;
+}
+
+/// Where a review's worktree and shared context files live.
+export function reviewPaths(review: Review): { worktree: string; context: string } {
+  const root = `${review.folder_path.replace(/\/+$/, "")}/pr-review-worktrees/${review.id}`;
+  return { worktree: root, context: `${root}.context` };
+}
+
+/// The reviewer prompt in the effective global prompt: the text after its
+/// "## Reviewer prompt" heading, else the default.
+export function reviewerPromptFrom(globalPrompt: string): string {
+  const m = /^## Reviewer prompt[^\n]*\n/m.exec(globalPrompt);
+  const tail = m ? globalPrompt.slice(m.index + m[0].length).trim() : "";
+  return tail || REVIEWER_PROMPT;
+}
+
+/// Everything a reviewer subagent needs, served by `pr_review_reviewer_brief`
+/// so the orchestrator never writes it out (as output tokens) per spawn.
+export function reviewerBrief(review: Review, globalPrompt: string, baselineResult: Result | null): string {
+  const p = reviewPaths(review);
+  const custom = review.custom_prompt.trim();
+  const b = review.baseline && baselineResult ? review.baseline.commit : null;
+  const scope = b
+    ? `This is an INCREMENTAL review: \`diff.patch\` holds only the commits after \`${b}\`. Review only that diff (read surrounding code as needed). These earlier findings are already reported — do NOT report them again:\n${earlierFindings(baselineResult as Result) || "(none)"}`
+    : "Review the whole change in `diff.patch`.";
+  return `# PR review ${review.id} — reviewer brief
+
+You are a READ-ONLY reviewer: never edit files, commit, or run mutating commands.
+
+## Inputs
+- Worktree (the code at the reviewed commit): \`${p.worktree}\`
+- \`${p.context}/diff.patch\` — the diff to review; \`${p.context}/context.md\` — commits, PR title/body, ticket.
+Read the diff, then only the surrounding code you need. Do not dump whole large files.
+
+${scope}
+${custom ? `\n## Additional instructions for this review\n${custom}\n` : ""}
+${reviewerPromptFrom(globalPrompt)}
+
+${REVIEWER_SCHEMA}`;
 }
 
 /// The session system prompt: global prompt + custom instructions + contract

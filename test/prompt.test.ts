@@ -73,6 +73,11 @@ describe("prompt assembly", () => {
     expect(p).toContain("### Number of reviewers");
     expect(p).toContain("claude-opus-5-5");
     expect(p).toContain("git diff --shortstat");
+    expect(p).toContain("spawn ONE claude reviewer");
+    // An opus-5-5 session reviews a small change itself — no subagent re-reading the code.
+    const own = buildSystemPrompt(review({ model: "claude:claude-opus-5-5" }), DEFAULT_GLOBAL_PROMPT);
+    expect(own).toContain("IN THIS SESSION");
+    expect(own).toContain("pr_review_reviewer_brief");
   });
 
   it("kickoff has no duplicated lines and names the scope", () => {

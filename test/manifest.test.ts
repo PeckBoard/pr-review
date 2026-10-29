@@ -62,9 +62,11 @@ describe("manifest", () => {
     expect([...names].sort()).toEqual(Object.keys(TOOLS).sort());
     expect(names).toEqual(expect.arrayContaining(["pr_review_start", "pr_review_get", "pr_review_list"]));
     for (const n of names) expect(n).toMatch(/^[a-z0-9_]{1,64}$/);
-    for (const n of names) expect(n).toMatch(/^[a-z0-9_]{1,64}$/);
     const submit = manifest.mcp_tools[1];
-    expect(submit.input_schema.required).toEqual(["result"]);
+    // `result` or, on an incremental re-run with nothing new, `unchanged`.
+    expect(submit.input_schema.required).toBeUndefined();
+    expect(submit.input_schema.properties.unchanged.type).toBe("boolean");
+    expect(submit.input_schema.properties.result.properties.carried.type).toBe("array");
     expect(submit.input_schema.properties.result.properties.verdict.enum).toEqual([
       "approve",
       "approve_with_comments",

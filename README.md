@@ -97,14 +97,23 @@ A review session itself is refused all of these, so reviews never recurse.
   a pinned review rejects any other SHA). `abort_reason` marks the review
   failed, for reviews that cannot run at all (for example, the branch does not
   exist).
-- `pr_review_submit({result})` validates the result strictly. When it fails,
-  it returns every problem with its JSON path, so the agent can fix them and
-  resubmit. When it is valid, the review becomes `done` and the counts are
-  computed. Providers still `pending` at submit never ran (a small change, or
-  an incremental re-run with nothing new) and are dropped from `providers`.
+- `pr_review_submit({result} | {unchanged: true})` validates the result
+  strictly. When it fails, it returns every problem with its JSON path, so the
+  agent can fix them and resubmit. When it is valid, the review becomes `done`
+  and the counts are computed. Providers still `pending` at submit never ran
+  (a small change, or an incremental re-run with nothing new) and are dropped
+  from `providers`. On an incremental re-run, `result.carried` lists earlier
+  finding indices the plugin copies in verbatim, and `{unchanged: true}`
+  re-uses the earlier result (HEAD must be the baseline commit).
 
 Both tools resolve the review from the **calling session's id** (the
 `session_index` collection), so only a review's own session can drive it.
+
+- `pr_review_reviewer_brief({review_id})` (any session — reviewers are
+  subagents) returns a running review's full reviewer instructions: the
+  reviewer prompt from the effective global prompt, the review's custom
+  instructions, absolute worktree / context-file paths, the scope (incremental
+  reviews list the earlier findings not to repeat), and the JSON schema.
 
 ## Re-runs and Reviewer Count
 
@@ -113,15 +122,24 @@ Both tools resolve the review from the **calling session's id** (the
   (`baseline: {review_id, commit}` on the new review). The session reviews
   only `git diff <baseline>..HEAD`; reviewers get the earlier findings so they
   do not report them again. Earlier findings in files the new commits did not
-  touch are kept verbatim; ones in touched files are re-checked (fixed → moved
-  to `dropped`). No new commits → the earlier result is re-submitted with no
-  reviewers spawned. Rewritten history (baseline not an ancestor of HEAD) →
+  touch are carried by index; ones in touched files are re-checked (fixed →
+  moved to `dropped`). No new commits → `{unchanged: true}`, no reviewers, no
+  context gathering. Rewritten history (baseline not an ancestor of HEAD) →
   a full review. Triage carries over to findings with the same kind, file and
   title. `full` skips all of this.
 - **Small changes.** A reviewed diff of at most 200 changed lines across at
   most 10 files (`SMALL_DIFF_*` in `src/prompt.ts`) gets one reviewer — claude
-  on `claude-opus-5-5` — instead of the claude/codex/grok fan-out. Both rules
-  live in the fixed contract, so they hold under a custom global prompt.
+  on `claude-opus-5-5` — instead of the claude/codex/grok fan-out. When the
+  review session itself runs that model it reviews in-session, with no
+  subagent and no separate verify pass.
+- **Token use.** Context is written once to `diff.patch` / `context.md` by
+  shell redirection; spawn prompts are one line pointing at
+  `pr_review_reviewer_brief`, never the prompt, schema or diff; verification
+  reads line windows, not whole files; earlier findings ride along compactly
+  (no suggestions / reviewers / confidence) and are carried by index.
+
+All of these rules live in the fixed contract, so they hold under a custom
+global prompt.
 ## Watchdog
 
 `session.agent.ended` fires when a review session's run ends. If no result

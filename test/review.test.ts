@@ -282,10 +282,13 @@ describe("cancel / delete / rerun / settings", () => {
       `ONLY the commits after ${sha}`,
     );
 
-    // Nothing new pushed: the earlier result comes back, no reviewer ran.
+    // Nothing new pushed: `unchanged` re-uses the earlier result, no reviewer ran.
+    expect(tool("pr_review_submit", { unchanged: true }, inc.session_id).error).toMatch(/HEAD to be the earlier commit/);
     tool("pr_review_step", { step: "context", commit: sha }, inc.session_id);
-    tool("pr_review_submit", { result: validResult() }, inc.session_id);
+    expect(tool("pr_review_submit", { unchanged: true }, inc.session_id).ok).toBe(true);
     const done = review(inc.id);
+    expect(done.result.findings).toEqual(review(r.id).result.findings);
+    expect(done.result.dropped).toEqual([]);
     expect(done.providers).toEqual({});
     expect(done.triage).toEqual({ "0": { ignored: true, comment: null } });
 
@@ -301,6 +304,31 @@ describe("cancel / delete / rerun / settings", () => {
       "Incremental re-run",
     );
   });
+
+  it("carried findings are copied by index; the reviewer brief scopes reviewers to new commits", () => {
+    const sha = "d".repeat(40);
+    const r = start();
+    tool("pr_review_step", { step: "context", commit: sha }, r.session_id);
+    tool("pr_review_submit", { result: validResult() }, r.session_id);
+    const before = review(r.id).result.findings; // [blocker, minor, praise]
+    const inc = http("POST", "rerun", { id: r.id }).json.review;
+
+    const brief = tool("pr_review_reviewer_brief", { review_id: inc.id }, "some-subagent").brief;
+    expect(brief).toContain(`only the commits after \`${sha}\``);
+    expect(brief).toContain("0. [blocker] src/up.ts:10-12 — Retry loop never ends");
+    expect(brief).toContain("/home/u/repo/pr-review-worktrees/" + inc.id + ".context/diff.patch");
+    expect(brief).toContain("Focus on retries.");
+    expect(brief).toContain("Reviewer JSON schema");
+    expect(tool("pr_review_reviewer_brief", { review_id: "nope" }, "x").error).toMatch(/not found/);
+
+    const fresh = { ...validResult().findings[1], title: "New off-by-one", line: 7 };
+    const base = { ...validResult(), findings: [fresh], dropped: [{ title: "Unused import", reason: "fixed in new commits" }] };
+    expect(tool("pr_review_submit", { result: { ...base, carried: [9] } }, inc.session_id).error).toMatch(/carried/);
+    expect(tool("pr_review_submit", { result: { ...base, carried: [0, 2] } }, inc.session_id).ok).toBe(true);
+    const titles = review(inc.id).result.findings.map((f: any) => f.title);
+    expect(titles).toEqual([before[0].title, "New off-by-one", before[2].title]);
+  });
+
   it("marks a running review failed when its session was deleted", () => {
     const r = start();
     liveSessions.delete(r.session_id);

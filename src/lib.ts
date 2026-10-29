@@ -12,6 +12,7 @@ import {
   toolList,
   toolListFolders,
   toolRerun,
+  toolReviewerBrief,
   toolSetPrompt,
   toolStart,
   toolStep,
@@ -26,6 +27,8 @@ export const TOOLS: Record<string, (args: any, context: any) => any> = {
   // Review sessions report back.
   pr_review_step: toolStep,
   pr_review_submit: toolSubmit,
+  // Reviewer subagents fetch their instructions.
+  pr_review_reviewer_brief: toolReviewerBrief,
   // Any other session starts and manages reviews.
   pr_review_start: toolStart,
   pr_review_list: toolList,
